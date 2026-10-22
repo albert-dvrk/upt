@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -27,7 +28,8 @@ WORKERS = ["worker-01", "worker-02", "worker-03"]
 
 
 def dc(*args, check=True):
-    return subprocess.run(["docker", "compose", *args], capture_output=True, text=True, check=check)
+    deploy_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "deploy")  # compose-файл лежит там
+    return subprocess.run(["docker", "compose", *args], capture_output=True, text=True, check=check, cwd=deploy_dir)
 
 
 def wait_healthy(timeout=90):
