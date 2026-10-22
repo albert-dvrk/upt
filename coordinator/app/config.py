@@ -9,9 +9,22 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="VF_", env_file=".env", extra="ignore")
 
     database_url: str = "postgresql+psycopg://videofetch:videofetch@localhost:5432/videofetch"
+
+    # блоки и аренда
     default_chunk_size: int = 1000
     lease_seconds: int = 60
     heartbeat_interval_seconds: int = 10
+    heartbeat_timeout_seconds: int = 30
+    reaper_interval_seconds: int = 5
+    max_chunk_attempts: int = 5
+
+    # Цель обхода: разрешены только перечисленные хосты (по умолчанию — свой mock-сервис).
+    default_url_template: str = "http://mock:8080/{id}"
+    allowed_target_hosts: str = "mock,localhost,127.0.0.1"
+
+    @property
+    def allowed_hosts(self) -> frozenset[str]:
+        return frozenset(h.strip().lower() for h in self.allowed_target_hosts.split(",") if h.strip())
 
 
 @lru_cache

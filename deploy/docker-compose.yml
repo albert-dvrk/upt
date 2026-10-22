@@ -17,6 +17,8 @@ services:
       POSTGRES_USER: videofetch
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-videofetch}
       POSTGRES_DB: videofetch
+    ports:
+      - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -50,6 +52,8 @@ services:
         condition: service_healthy
     environment:
       VF_DATABASE_URL: postgresql+psycopg://videofetch:${POSTGRES_PASSWORD:-videofetch}@postgres:5432/videofetch
+      VF_ALLOWED_TARGET_HOSTS: mock
+      VF_DEFAULT_URL_TEMPLATE: "http://mock:8080/{id}"
     volumes:
       - ./secrets/downloader_ed25519:/run/secrets/worker-key:ro
     ports:
