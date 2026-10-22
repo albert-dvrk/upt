@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import os
+import re
 import shutil
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from .http import NetworkError, open_stream, request
-from .util import RateGate, backoff_delay, parse_retry_after, safe_join, video_filename
+from .util import RateGate, backoff_delay, parse_retry_after, safe_join
 
 
 @dataclass
@@ -33,9 +35,40 @@ class Outcome:
     status: str
     http_status: int | None = None
     error_code: str | None = None
+    media: dict | None = None  # метаданные материала (для таблицы media_metadata)
+    file: dict | None = None  # скачанный файл: относительный путь, размер, SHA-256
 
     def as_item(self) -> dict:
-        return {k: v for k, v in {"external_id": self.external_id, "status": self.status, "http_status": self.http_status, "error_code": self.error_code}.items() if v is not None}
+        base = {"external_id": self.external_id, "status": self.status, "http_status": self.http_status,
+                "error_code": self.error_code, "media": self.media, "file": self.file}
+        return {k: v for k, v in base.items() if v is not None}
+
+
+MIME_EXT = {"video/mp4": "mp4", "video/webm": "webm", "video/x-matroska": "mkv", "video/quicktime": "mov",
+            "video/mpeg": "mpg", "video/ogg": "ogv", "video/x-msvideo": "avi"}
+ID_PREFIX_DIVISOR = 1_000_000  # id 200673499 -> каталог «200», как в примере задания
+
+
+def media_from(vid: int, meta: dict, s: "FetchSettings") -> dict:
+    """Приводит ответ сервиса к формату MediaIn координатора."""
+    sha = meta.get("sha256")
+    size = meta.get("size_bytes")
+    return {k: v for k, v in {
+        "title": str(meta["title"])[:1000] if meta.get("title") is not None else None,
+        "page_url": str(meta.get("page_url") or s.url_template.replace("{id}", str(vid)))[:1024],
+        "download_url": str(meta["download_url"])[:2048] if meta.get("download_url") else None,
+        "mime_type": str(meta["mime_type"])[:128] if meta.get("mime_type") else None,
+        "size_bytes": size if isinstance(size, int) and size >= 0 else None,
+        "checksum_sha256": sha if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{64}", sha) else None,
+    }.items() if v is not None}
+
+
+def extension_for(meta: dict) -> str:
+    ext = MIME_EXT.get(str(meta.get("mime_type") or "").lower())
+    if ext:
+        return ext
+    m = re.search(r"\.([A-Za-z0-9]{1,5})(?:$|\?)", urlparse(str(meta.get("download_url") or "")).path)
+    return m.group(1).lower() if m else "bin"
 
 
 class Stop(Exception):
@@ -111,10 +144,20 @@ class Fetcher:
     # ------------------------------------------------------------ загрузка
 
     def target_path(self, vid: int, meta: dict, s: FetchSettings) -> str:
-        return safe_join(s.storage_path, video_filename(vid, meta.get("title")))
+        """{storage}/{id-prefix}/{id}/video.{ext}: имя каталога — идентификатор, название материала в пути не участвует."""
+        return safe_join(s.storage_path, str(vid // ID_PREFIX_DIVISOR), str(vid), f"video.{extension_for(meta)}")
 
     def download(self, vid: int, meta: dict, s: FetchSettings) -> Outcome:
-        """Скачивает файл во временный `.part` с докачкой, проверяет размер и SHA-256, затем переименовывает."""
+        """Скачивает файл во временный `.part` с докачкой, проверяет размер и SHA-256, затем переименовывает.
+
+        В любом исходе возвращает метаданные материала; при успехе — ещё и описание файла, а рядом
+        с видео записывается metadata.json.
+        """
+        out = self._download(vid, meta, s)
+        out.media = media_from(vid, meta, s)
+        return out
+
+    def _download(self, vid: int, meta: dict, s: FetchSettings) -> Outcome:
         url = meta.get("download_url")
         if not url or not meta.get("downloadable", True):
             return Outcome(vid, "skipped", None, "not_downloadable")
@@ -129,7 +172,7 @@ class Fetcher:
         os.makedirs(os.path.dirname(final), exist_ok=True)
 
         if os.path.exists(final) and self._matches(final, size, digest):
-            return Outcome(vid, "completed", 200)  # уже скачан раньше (повторная выдача блока)
+            return self._finish(vid, meta, s, final)  # уже скачан раньше (повторная выдача блока)
 
         if size and s.min_free_bytes is not None:
             free = shutil.disk_usage(os.path.dirname(final)).free
@@ -191,9 +234,37 @@ class Fetcher:
             os.remove(part)  # повреждённый файл не оставляем
             return Outcome(vid, "failed", 200, "checksum_mismatch")
         os.replace(part, final)  # атомарное появление готового файла
-        return Outcome(vid, "completed", 200)
+        return self._finish(vid, meta, s, final)
 
     # ------------------------------------------------------------ внутреннее
+
+    def _finish(self, vid: int, meta: dict, s: FetchSettings, final: str) -> Outcome:
+        """Считает итоговый SHA-256, пишет metadata.json (атомарно) и формирует описание файла."""
+        h = hashlib.sha256()
+        with open(final, "rb") as fh:
+            for block in iter(lambda: fh.read(1 << 20), b""):
+                h.update(block)
+        digest = h.hexdigest()
+        size = os.path.getsize(final)
+        root = os.path.realpath(s.storage_path)
+        rel = os.path.relpath(final, root).replace(os.sep, "/")
+        now = dt.datetime.now(dt.timezone.utc).isoformat()
+        info = {
+            "id": vid, **{k: v for k, v in media_from(vid, meta, s).items()},
+            "file": os.path.basename(final), "size_bytes": size, "sha256": digest,
+            "downloaded_at": now, "status": "completed",
+        }
+        mpath = os.path.join(os.path.dirname(final), "metadata.json")
+        with open(mpath + ".tmp", "w", encoding="utf-8") as fh:
+            json.dump(info, fh, ensure_ascii=False, indent=2)
+        os.replace(mpath + ".tmp", mpath)
+        mime = meta.get("mime_type")
+        file = {"storage_path": rel, "size_bytes": size, "checksum_sha256": digest}
+        if mime:
+            file["mime_type"] = str(mime)[:128]
+        out = Outcome(vid, "completed", 200)
+        out.file = file
+        return out
 
     @staticmethod
     def _allowed_download_host(url: str, s: FetchSettings) -> bool:
@@ -223,4 +294,4 @@ class Fetcher:
         return True
 
 
-__all__ = ["Fetcher", "FetchSettings", "Outcome", "Stop", "json", "time"]
+__all__ = ["Fetcher", "FetchSettings", "Outcome", "Stop", "media_from", "extension_for", "field", "time"]

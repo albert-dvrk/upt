@@ -1,0 +1,71 @@
+@startuml lease-sequence
+!theme plain
+skinparam defaultFontName DejaVu Sans
+skinparam shadowing false
+title Последовательность выдачи и обработки блока (аренда, at-least-once)
+
+participant "Агент" as A
+participant "Координатор" as C
+database "PostgreSQL" as DB
+participant "Целевой сервис" as T
+participant "Reaper" as R
+
+A -> C : POST /api/workers/register
+C --> A : worker_id, lease_seconds, heartbeat_interval
+
+loop каждые ~10 с
+  A -> C : POST /heartbeat (метрики, ресурсы)
+  C -> DB : сохранить метрики, продлить аренды этого сервера
+end
+
+A -> C : POST /{id}/lease
+C -> DB : BEGIN\nблок «pending» или с истёкшей арендой\nSELECT … FOR UPDATE SKIP LOCKED
+note right of DB
+  Открытый диапазон: новый блок создаётся
+  под блокировкой строки задания.
+  Повторный запрос того же агента
+  возвращает тот же блок (идемпотентно).
+end note
+C -> DB : leased_by = агент, lease_expires_at, attempt++
+C --> A : блок [start..end], next_id, настройки (потоки, лимит, тайм-аут)
+
+loop по идентификаторам блока (пул потоков)
+  A -> T : GET /{id}
+  alt 200
+    T --> A : метаданные
+    A -> T : GET /files/{id}/video.mp4 (Range при докачке)
+    T --> A : поток данных
+    A -> A : .part → проверка размера и SHA-256 → rename
+  else 404 / 403
+    T --> A : not_found / forbidden (фиксируем, обхода нет)
+  else 429
+    T --> A : Retry-After
+    A -> A : пауза всех потоков, снижение частоты
+  else 5xx / обрыв
+    A -> A : повтор с задержкой 2^n + jitter
+  end
+  opt накоплено N результатов или прошло ~5 с
+    A -> C : POST /progress (next_id, результаты)
+    C -> DB : upsert items (идемпотентно), next_id только вперёд, продлить аренду
+    C --> A : статус задания, актуальные настройки
+  end
+end
+
+A -> C : POST /complete (оставшиеся результаты)
+C -> DB : результат есть для каждого ID блока?
+alt да
+  C -> DB : статус блока = completed\nпересчёт состояния задания
+  C --> A : 200
+else не хватает результатов
+  C --> A : 409 chunk_incomplete
+end
+
+== Отказ агента ==
+R -> DB : heartbeat старше порога или lease_expires_at < now
+R -> DB : блок → pending, сервер → offline
+note over A, C
+  Другой агент получит блок с контрольной точки next_id;
+  уже сохранённые результаты не дублируются.
+  Если старый агент вернётся: 409 lease_lost, блок бросает.
+end note
+@enduml

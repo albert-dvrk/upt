@@ -3,6 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import Settings
 from app.main import create_app
 from app.services.deploy import DeployConfig, Result, SshDeployer
 
@@ -26,7 +27,7 @@ def ctx(session_factory, tmp_path):
     (src / "main.py").write_text("x = 1\n")
     runner = FakeRunner()
     cfg = DeployConfig(source_dir=str(tmp_path / "agent"), coordinator_url="http://coordinator:8000", key_dir=str(secrets))
-    app = create_app(session_factory, background=False, deployer=SshDeployer(cfg, runner))
+    app = create_app(session_factory, background=False, deployer=SshDeployer(cfg, runner), settings=Settings(auth_enabled=False))
     with TestClient(app) as c:
         yield c, runner, str(secrets / "worker-key")
 

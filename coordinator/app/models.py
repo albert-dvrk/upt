@@ -102,6 +102,7 @@ class Worker(Base):
     ssh_user: Mapped[str] = mapped_column(String(64))
     auth_method: Mapped[str] = mapped_column(String(16), default="key", server_default="key")
     ssh_key_ref: Mapped[Optional[str]] = mapped_column(String(255))  # ссылка на секрет, не сам ключ
+    agent_token_hash: Mapped[Optional[str]] = mapped_column(String(64))  # SHA-256 токена агента; сам токен не хранится
     threads: Mapped[int] = mapped_column(Integer, default=4, server_default="4")
     storage_path: Mapped[str] = mapped_column(String(512))
     min_free_space_gb: Mapped[int] = mapped_column(Integer, default=20, server_default="20")

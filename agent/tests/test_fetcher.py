@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 
 import pytest
@@ -91,14 +92,48 @@ def test_already_downloaded_file_is_not_fetched_again(fetcher, settings, target)
     assert target.file_hits == hits
 
 
-def test_hostile_title_stays_inside_storage(fetcher, settings, target, tmp_path):
+def test_hostile_title_never_reaches_the_path(fetcher, settings, target, tmp_path):
     target.titles[1] = "../../../etc/cron.d/evil"
     _, meta = fetcher.check(1, settings)
-    assert fetcher.download(1, meta, settings).status == "completed"
+    out = fetcher.download(1, meta, settings)
+    assert out.status == "completed"
     root = os.path.realpath(settings.storage_path)
-    files = os.listdir(root)
-    assert len(files) == 1 and os.path.realpath(os.path.join(root, files[0])).startswith(root)
+    assert out.file["storage_path"] == "0/1/video.mp4"  # каталог — идентификатор, название в пути не участвует
+    assert sorted(os.listdir(os.path.join(root, "0", "1"))) == ["metadata.json", "video.mp4"]
     assert not os.path.exists(tmp_path / "etc")
+    saved = json.load(open(os.path.join(root, "0", "1", "metadata.json"), encoding="utf-8"))
+    assert saved["title"] == "../../../etc/cron.d/evil"  # исходное название хранится только в метаданных
+
+
+def test_directory_layout_uses_id_prefix(fetcher, settings, target):
+    target.found.add(200673499)
+    _, meta = fetcher.check(200673499, settings)
+    path = fetcher.target_path(200673499, meta, settings)
+    assert path.endswith("/200/200673499/video.mp4")
+
+
+def test_outcome_carries_media_and_file_info(fetcher, settings):
+    _, meta = fetcher.check(2, settings)
+    out = fetcher.download(2, meta, settings)
+    item = out.as_item()
+    assert item["media"]["page_url"].endswith("/2") and item["media"]["mime_type"] == "video/mp4"
+    assert item["media"]["checksum_sha256"] == meta["sha256"] and item["media"]["title"] == meta["title"]
+    assert item["file"]["checksum_sha256"] == meta["sha256"]
+    assert item["file"]["size_bytes"] == 300_000 and item["file"]["storage_path"] == "0/2/video.mp4"
+
+
+def test_failed_download_still_reports_media_but_no_file(fetcher, settings, target):
+    target.corrupt = {7}
+    _, meta = fetcher.check(7, settings)
+    item = fetcher.download(7, meta, settings).as_item()
+    assert item["status"] == "failed" and "media" in item and "file" not in item
+
+
+def test_extension_follows_mime_type():
+    from videofetch_agent.fetcher import extension_for
+    assert extension_for({"mime_type": "video/webm"}) == "webm"
+    assert extension_for({"mime_type": "x/unknown", "download_url": "http://h/f/clip.MKV?x=1"}) == "mkv"
+    assert extension_for({}) == "bin"
 
 
 def test_download_host_must_match_target(fetcher, settings):

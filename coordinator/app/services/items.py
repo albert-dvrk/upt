@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Item, RangeChunk
+from app.models import Download, FileRecord, Item, MediaMetadata, RangeChunk
 from app.schemas import ItemIn
 from app.services.errors import Invalid
 from app.statuses import ItemStatus
@@ -80,4 +80,59 @@ def upsert_items(
             where=or_(Item.status != done, stmt.excluded.status == done),
         )
         session.execute(stmt)
+    _store_media_and_files(session, chunk, worker_id, list(unique.values()), now)
     return len(rows)
+
+
+def _store_media_and_files(
+    session: Session, chunk: RangeChunk, worker_id: int, results: list[ItemIn], now: dt.datetime
+) -> None:
+    """Метаданные материала (по одной записи на элемент) и завершённая загрузка с файлом. Идемпотентно."""
+    with_data = [r for r in results if r.media or r.file]
+    if not with_data:
+        return
+    ids = {
+        ext: iid
+        for iid, ext in session.execute(
+            select(Item.id, Item.external_id).where(
+                Item.job_id == chunk.job_id, Item.external_id.in_([r.external_id for r in with_data])
+            )
+        )
+    }
+    insert = _insert_for(session)
+
+    for r in with_data:
+        item_id = ids[r.external_id]
+        if r.media:
+            values = {"item_id": item_id, **r.media.model_dump()}
+            stmt = insert(MediaMetadata).values(**values)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["item_id"],
+                set_={k: getattr(stmt.excluded, k) for k in r.media.model_dump()},
+            )
+            session.execute(stmt)
+
+        if r.file and r.status == ItemStatus.COMPLETED:
+            download = session.scalar(
+                select(Download).where(Download.item_id == item_id, Download.status == "completed")
+            )
+            if download is None:
+                download = Download(
+                    item_id=item_id,
+                    worker_id=worker_id,
+                    status="completed",
+                    bytes_total=r.file.size_bytes,
+                    bytes_done=r.file.size_bytes,
+                    started_at=now,
+                    finished_at=now,
+                )
+                session.add(download)
+                session.flush()
+            stmt = insert(FileRecord).values(
+                download_id=download.id,
+                storage_path=r.file.storage_path,
+                size_bytes=r.file.size_bytes,
+                mime_type=r.file.mime_type,
+                checksum_sha256=r.file.checksum_sha256,
+            )
+            session.execute(stmt.on_conflict_do_nothing(index_elements=["download_id", "storage_path"]))

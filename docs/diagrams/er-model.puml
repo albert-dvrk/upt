@@ -1,0 +1,120 @@
+@startuml er-model
+!theme plain
+skinparam defaultFontName DejaVu Sans
+skinparam shadowing false
+hide circle
+title Модель данных (ER)
+
+entity users {
+  * id : bigint
+  username (уникален)
+  password_hash
+  is_active
+}
+entity roles {
+  * id
+  name: viewer / operator / administrator
+}
+entity user_roles {
+  * user_id
+  * role_id
+}
+entity workers {
+  * id
+  name (уникален)
+  host, ssh_port, ssh_user
+  ssh_key_ref (ссылка, не ключ)
+  threads, storage_path
+  min_free_space_gb
+  status, enabled
+  last_heartbeat_at, resources
+}
+entity worker_metrics {
+  * id
+  worker_id, collected_at
+  cpu, ram, disk, сеть, ввод-вывод
+  ids_per_sec, download_bps
+  http_status_counts
+}
+entity jobs {
+  * id
+  name, status, attempt
+  range_from, range_to (NULL = без границы)
+  chunk_size, max_retries
+  global_rate_limit_rps
+  max_ids, max_runtime_seconds
+  config
+}
+entity job_workers {
+  * job_id
+  * worker_id
+  threads, rate_limit_rps, enabled
+}
+entity range_chunks {
+  * id
+  job_id
+  range_start, range_end
+  next_id (контрольная точка)
+  status, attempt
+  leased_by, lease_expires_at
+}
+entity items {
+  * id
+  job_id, chunk_id
+  external_id
+  status, http_status
+  error_code, attempts
+  worker_id, checked_at
+}
+entity media_metadata {
+  * id
+  item_id (уникален)
+  title, page_url, download_url
+  mime_type, size_bytes
+  checksum_sha256
+}
+entity downloads {
+  * id
+  item_id, worker_id
+  attempt, status
+  bytes_total, bytes_done
+  error_code
+}
+entity files {
+  * id
+  download_id
+  storage_path
+  size_bytes, mime_type
+}
+entity events {
+  * id
+  ts, level, component
+  job_id, worker_id, chunk_id
+  operation, result
+  error_code, message
+}
+entity audit_log {
+  * id
+  ts, user_id, username
+  action, target_type, target_id
+}
+
+users ||--o{ user_roles
+roles ||--o{ user_roles
+users |o--o{ jobs : created_by
+jobs ||--o{ job_workers
+workers ||--o{ job_workers
+workers ||--o{ worker_metrics
+jobs ||--o{ range_chunks
+workers |o--o{ range_chunks : leased_by
+jobs ||--o{ items
+range_chunks |o--o{ items
+items ||--o| media_metadata
+items ||--o{ downloads
+downloads ||--o{ files
+users |o--o{ audit_log
+
+note bottom of items : UNIQUE (job_id, external_id)\n— защита от дубликатов
+note bottom of range_chunks : UNIQUE (job_id, range_start, range_end)
+note bottom of files : UNIQUE (download_id, storage_path)
+@enduml

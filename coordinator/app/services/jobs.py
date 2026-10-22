@@ -420,3 +420,41 @@ def list_events(session: Session, job_id: int, *, level: str | None, limit: int)
     if level:
         stmt = stmt.where(Event.level == level.upper())
     return list(session.scalars(stmt.order_by(Event.id.desc()).limit(limit)).all())
+
+
+def list_files(session: Session, job_id: int, *, limit: int, offset: int) -> tuple[int, list[dict[str, Any]]]:
+    """Скачанные файлы задания вместе с названием материала."""
+    from app.models import Download, FileRecord, MediaMetadata
+
+    get_job(session, job_id)
+    base = (
+        select(FileRecord, Item, Download, MediaMetadata)
+        .join(Download, Download.id == FileRecord.download_id)
+        .join(Item, Item.id == Download.item_id)
+        .outerjoin(MediaMetadata, MediaMetadata.item_id == Item.id)
+        .where(Item.job_id == job_id)
+    )
+    total = (
+        session.scalar(
+            select(func.count())
+            .select_from(FileRecord)
+            .join(Download, Download.id == FileRecord.download_id)
+            .join(Item, Item.id == Download.item_id)
+            .where(Item.job_id == job_id)
+        )
+        or 0
+    )
+    rows = session.execute(base.order_by(Item.external_id).limit(limit).offset(offset)).all()
+    return total, [
+        {
+            "external_id": item.external_id,
+            "title": media.title if media else None,
+            "mime_type": f.mime_type,
+            "size_bytes": f.size_bytes,
+            "checksum_sha256": f.checksum_sha256,
+            "storage_path": f.storage_path,
+            "worker_id": d.worker_id,
+            "completed_at": f.completed_at,
+        }
+        for f, item, d, media in rows
+    ]

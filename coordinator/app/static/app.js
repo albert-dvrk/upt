@@ -11,13 +11,20 @@ const ITEM_RU = {
   rate_limited: "лимит (429)", retry_wait: "повтор", failed: "ошибка", cancelled: "отменено",
 };
 
+const ROLE_LEVEL = { viewer: 1, operator: 2, administrator: 3 };
+let CSRF = "";                 // токен защиты от CSRF, выдаётся при входе
+let onUnauthorized = () => {}; // вызывается, когда сессия закончилась
+
 async function api(method, path, body) {
+  const headers = body !== undefined ? { "Content-Type": "application/json" } : {};
+  if (CSRF) headers["X-CSRF-Token"] = CSRF;
   const res = await fetch(path, {
-    method, headers: body !== undefined ? { "Content-Type": "application/json" } : {},
+    method, headers, credentials: "same-origin",
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   let data = null;
   try { data = await res.json(); } catch (_) { /* пустое тело */ }
+  if (res.status === 401 && path !== "/api/auth/login") onUnauthorized();
   if (!res.ok) {
     const msg = data && (data.message || data.error) ? `${data.error || res.status}: ${data.message || ""}` : `HTTP ${res.status}`;
     throw new Error(msg);
@@ -31,15 +38,74 @@ const CHARTS = {};
 function app() {
   return {
     tab: "jobs", online: true, toast: "", toastTimer: null,
-    jobs: [], workers: [], job: null, chunks: [], items: { total: 0, items: [] }, events: [],
+    jobs: [], workers: [], job: null, chunks: [], items: { total: 0, items: [] }, files: { total: 0, files: [] }, events: [],
     itemFilter: "", itemOffset: 0, edit: { threads: "", rps: "" }, editJobId: null,
     form: { name: "", range: "[0,299]", chunk_size: 50, threads: "", rps: "", workers: [] },
     wform: { name: "", host: "", ssh_port: 22, ssh_user: "downloader", ssh_key_ref: "/run/secrets/worker-key", storage_path: "/data/videos", threads: 4 },
     metricWorker: null, tick: 0, lastErr: "",
+    me: null, authChecked: false, login: { username: "", password: "", error: "", busy: false },
+    users: [], audit: [], auditAction: "", uform: { username: "", password: "", role: "viewer" }, pollStarted: false,
 
     async init() {
+      onUnauthorized = () => { this.me = null; CSRF = ""; };
+      try {
+        const me = await api("GET", "/api/auth/me");
+        this.setMe(me);
+      } catch (_) { this.me = null; }
+      this.authChecked = true;
+      if (this.me) await this.startPolling();
+    },
+    setMe(me) { this.me = me; CSRF = me.csrf_token; },
+    async startPolling() {
       await this.refresh();
-      setInterval(() => this.refresh(), 2000);
+      if (!this.pollStarted) { this.pollStarted = true; setInterval(() => this.refresh(), 2000); }
+    },
+    can(role) { return !!this.me && Math.max(0, ...this.me.roles.map((r) => ROLE_LEVEL[r] || 0)) >= ROLE_LEVEL[role]; },
+    async doLogin() {
+      const l = this.login; l.error = ""; l.busy = true;
+      try {
+        this.setMe(await api("POST", "/api/auth/login", { username: l.username, password: l.password }));
+        l.password = ""; this.tab = "jobs"; await this.startPolling();
+      } catch (e) { l.error = e.message.replace(/^[a-z_]+: /, ""); }
+      l.busy = false;
+    },
+    async doLogout() {
+      try { await api("POST", "/api/auth/logout"); } catch (_) { /* сессия уже закончилась */ }
+      this.me = null; CSRF = ""; this.job = null; this.jobs = []; this.workers = [];
+    },
+    async openUsers() {
+      this.tab = "users";
+      await this.guard(async () => { await this.loadUsers(); });
+    },
+    async loadUsers() {
+      [this.users, this.audit] = await Promise.all([
+        api("GET", "/api/users"), api("GET", "/api/audit?limit=200" + (this.auditAction ? `&action=${encodeURIComponent(this.auditAction)}` : "")),
+      ]);
+    },
+    async createUser() {
+      await this.guard(async () => {
+        const f = this.uform;
+        await api("POST", "/api/users", { username: f.username, password: f.password, roles: [f.role] });
+        this.say(`Пользователь ${f.username} создан`);
+        f.username = ""; f.password = "";
+        await this.loadUsers();
+      });
+    },
+    async setUserRole(u, role) {
+      await this.guard(async () => { await api("PATCH", `/api/users/${u.id}`, { roles: [role] }); await this.loadUsers(); });
+      await this.loadUsers().catch(() => {});
+    },
+    async toggleUser(u) {
+      await this.guard(async () => { await api("PATCH", `/api/users/${u.id}`, { is_active: !u.is_active }); await this.loadUsers(); });
+    },
+    async resetPassword(u) {
+      const pw = prompt(`Новый пароль для ${u.username} (не менее 10 символов, буквы обоих регистров и цифры):`);
+      if (!pw) return;
+      await this.guard(async () => { await api("PATCH", `/api/users/${u.id}`, { password: pw }); this.say("Пароль изменён"); });
+    },
+    async revokeToken(w) {
+      if (!confirm(`Отозвать токен агента ${w.name}? Агент перестанет получать работу до следующего «Запустить».`)) return;
+      await this.guard(async () => { await api("POST", `/api/workers/${w.id}/token/revoke`); this.say("Токен отозван"); });
     },
 
     // ---------- утилиты отображения
@@ -59,11 +125,12 @@ function app() {
 
     // ---------- загрузка данных
     async refresh() {
+      if (!this.me) return;
       this.tick++;
       try {
         const [jobs, workers] = await Promise.all([api("GET", "/api/jobs"), api("GET", "/api/workers")]);
         this.jobs = jobs; this.workers = workers; this.online = true;
-      } catch (_) { this.online = false; return; }  // «нет связи» — только если не отвечают основные запросы
+      } catch (_) { if (this.me) this.online = false; return; }  // «нет связи» — только если не отвечают основные запросы
       // ошибки остального показываем сообщением, а не ложной потерей связи
       if (this.job) await this.guardQuiet(() => this.refreshJob(), "задание");
       if (this.tab === "workers" && this.metricWorker && this.tick % 2 === 0) await this.guardQuiet(() => this.loadMetrics(), "метрики");
@@ -80,10 +147,11 @@ function app() {
     },
     async refreshJob() {
       const id = this.job.id;
-      const [job, chunks, events] = await Promise.all([
+      const [job, chunks, events, files] = await Promise.all([
         api("GET", `/api/jobs/${id}`), api("GET", `/api/jobs/${id}/chunks?limit=200`), api("GET", `/api/jobs/${id}/events?limit=100`),
+        api("GET", `/api/jobs/${id}/files?limit=100`),
       ]);
-      this.job = job; this.chunks = chunks; this.events = events;
+      this.job = job; this.chunks = chunks; this.events = events; this.files = files;
       if (this.editJobId !== id) {  // поля редактирования не затираем при каждом опросе
         this.edit = { threads: job.config?.threads ?? "", rps: job.global_rate_limit_rps ?? "" };
         this.editJobId = id;

@@ -1,7 +1,7 @@
 name: videofetch
 
 # Лабораторный стенд: PostgreSQL, mock-хостинг, координатор и три «рабочих сервера» с sshd.
-# Перед первым запуском:  ./gen-keys.sh
+# Перед первым запуском:  ./gen-secrets.sh   (SSH-ключ, TLS-сертификат, deploy/.env с паролем администратора)
 # Запуск:                 docker compose up --build
 
 x-worker: &worker
@@ -54,9 +54,14 @@ services:
       VF_DATABASE_URL: postgresql+psycopg://videofetch:${POSTGRES_PASSWORD:-videofetch}@postgres:5432/videofetch
       VF_ALLOWED_TARGET_HOSTS: mock
       VF_DEFAULT_URL_TEMPLATE: "http://mock:8080/{id}"
-      VF_AGENT_COORDINATOR_URL: "http://coordinator:8000"
+      VF_AGENT_COORDINATOR_URL: "https://coordinator:8000"
+      VF_AGENT_CA_FILE: /run/tls/server.crt
+      VF_COOKIE_SECURE: "true"
+      VF_SECRET_KEY: ${VF_SECRET_KEY:?Запустите ./gen-secrets.sh}
+      VF_ADMIN_PASSWORD: ${VF_ADMIN_PASSWORD:?Запустите ./gen-secrets.sh}
     volumes:
       - ./secrets/downloader_ed25519:/run/secrets/worker-key:ro
+      - ./secrets/tls:/run/tls:ro
     ports:
       - "8001:8000"
 

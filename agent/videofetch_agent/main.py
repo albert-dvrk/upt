@@ -103,12 +103,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--coordinator", default=os.environ.get("VF_COORDINATOR_URL"), required=not os.environ.get("VF_COORDINATOR_URL"))
     p.add_argument("--name", default=os.environ.get("VF_WORKER_NAME"), required=not os.environ.get("VF_WORKER_NAME"))
     p.add_argument("--token", default=os.environ.get("VF_AGENT_TOKEN"))
+    p.add_argument("--token-file", default=os.environ.get("VF_AGENT_TOKEN_FILE"), help="файл с токеном (предпочтительнее --token)")
+    p.add_argument("--ca-file", default=os.environ.get("VF_CA_FILE"), help="сертификат координатора для HTTPS")
     p.add_argument("--url-template", default=os.environ.get("VF_DEFAULT_URL_TEMPLATE", ""))
     p.add_argument("--log-level", default=os.environ.get("VF_LOG_LEVEL", "INFO"))
     args = p.parse_args(argv)
     logging.basicConfig(level=args.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-    agent = Agent(CoordinatorClient(args.coordinator, args.name, token=args.token), args.url_template)
+    token = args.token
+    if args.token_file:
+        with open(args.token_file, encoding="utf-8") as fh:
+            token = fh.read().strip()
+    agent = Agent(CoordinatorClient(args.coordinator, args.name, token=token, ca_file=args.ca_file), args.url_template)
 
     def shutdown(signum, _frame) -> None:
         log.info("получен сигнал %s, останавливаюсь", signum)

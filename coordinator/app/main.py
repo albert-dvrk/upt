@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import secrets
 from contextlib import asynccontextmanager
 
 from pathlib import Path
@@ -14,13 +16,35 @@ from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 from app import API_VERSION, __version__
+from app.api import auth as auth_api
 from app.api import jobs as jobs_api
+from app.api import users as users_api
 from app.api import workers as workers_api
 from app.background import reaper_loop
 from app.config import Settings, get_settings
 from app.db import make_engine, make_session_factory
+from app.services import auth as auth_svc
 from app.services.deploy import DeployConfig, SshDeployer
 from app.services.errors import ServiceError
+
+
+log = logging.getLogger("videofetch.coordinator")
+
+CSP = (
+    "default-src 'self'; script-src 'self' 'unsafe-eval' https://cdnjs.cloudflare.com; "
+    "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
+    "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+)
+
+
+def _read_ca(path: str | None) -> str | None:
+    if not path:
+        return None
+    try:
+        return Path(path).read_text()
+    except OSError:
+        log.warning("не удалось прочитать сертификат %s: агенты получат только HTTP-доверие системы", path)
+        return None
 
 
 def create_app(
@@ -35,6 +59,11 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        if settings.auth_enabled:
+            with factory() as session:  # первый администратор из VF_ADMIN_PASSWORD, если пользователей ещё нет
+                if auth_svc.bootstrap_admin(session, settings):
+                    session.commit()
+                    log.info("создан администратор %s", settings.admin_username)
         stop = asyncio.Event()
         task = asyncio.create_task(reaper_loop(factory, stop, settings)) if background else None
         try:
@@ -46,6 +75,12 @@ def create_app(
 
     application = FastAPI(title="videofetch coordinator", version=__version__, lifespan=lifespan)
     application.state.session_factory = factory
+    application.state.settings = settings
+    if settings.auth_enabled and not settings.secret_key:
+        log.warning("VF_SECRET_KEY не задан: ключ сессий случайный, после перезапуска все войдут заново")
+    application.state.secret_key = settings.secret_key or secrets.token_hex(32)
+    application.state.login_throttle = auth_svc.LoginThrottle(settings.login_max_failures, settings.login_lock_seconds)
+    application.state.agent_ca_pem = _read_ca(settings.agent_ca_file)
     application.state.deployer = deployer or SshDeployer(
         DeployConfig(
             source_dir=settings.agent_source_dir,
@@ -58,6 +93,8 @@ def create_app(
             url_template=settings.default_url_template,
         )
     )
+    application.include_router(auth_api.router)
+    application.include_router(users_api.router)
     application.include_router(jobs_api.router)
     application.include_router(workers_api.router)
 
@@ -68,6 +105,20 @@ def create_app(
         @application.get("/", include_in_schema=False)
         def root() -> RedirectResponse:
             return RedirectResponse("/ui/")
+
+    @application.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        if request.url.path.startswith("/api/"):
+            response.headers.setdefault("Cache-Control", "no-store")
+        else:
+            response.headers.setdefault("Content-Security-Policy", CSP)
+        if settings.cookie_secure:
+            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+        return response
 
     @application.exception_handler(ServiceError)
     async def service_error_handler(_: Request, exc: ServiceError) -> JSONResponse:

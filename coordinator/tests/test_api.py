@@ -183,3 +183,29 @@ def test_ui_is_served(client):
     assert client.get("/ui/style.css").status_code == 200
     root = client.get("/", follow_redirects=False)
     assert root.status_code in (302, 307) and root.headers["location"] == "/ui/"
+
+
+def test_media_and_files_over_http(client):
+    wid, jid = setup_job(client, "[0,9]")
+    client.post(f"/api/jobs/{jid}/start")
+    chunk = client.post(f"/api/workers/{wid}/lease").json()["chunk"]
+    sha = "b" * 64
+    batch = items(0, 9)
+    batch[4] = {
+        "external_id": 4, "status": "completed", "http_status": 200,
+        "media": {"title": "Лекция", "page_url": "http://mock:8080/4", "mime_type": "video/mp4", "size_bytes": 10, "checksum_sha256": sha},
+        "file": {"storage_path": "0/4/video.mp4", "size_bytes": 10, "mime_type": "video/mp4", "checksum_sha256": sha},
+    }
+    r = client.post(f"/api/workers/{wid}/complete", json={"chunk_id": chunk["chunk_id"], "items": batch})
+    assert r.status_code == 200
+    files = client.get(f"/api/jobs/{jid}/files").json()
+    assert files["total"] == 1 and files["files"][0]["title"] == "Лекция" and files["files"][0]["storage_path"] == "0/4/video.mp4"
+
+
+def test_unsafe_file_path_is_rejected_over_http(client):
+    wid, jid = setup_job(client, "[0,9]")
+    client.post(f"/api/jobs/{jid}/start")
+    chunk = client.post(f"/api/workers/{wid}/lease").json()["chunk"]
+    bad = {"external_id": 1, "status": "completed", "file": {"storage_path": "../../etc/cron.d/x", "size_bytes": 1, "checksum_sha256": "c" * 64}}
+    r = client.post(f"/api/workers/{wid}/progress", json={"chunk_id": chunk["chunk_id"], "next_id": 2, "items": [bad]})
+    assert r.status_code == 422

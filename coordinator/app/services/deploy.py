@@ -171,24 +171,51 @@ class SshDeployer:
             raise RemoteError(f"Не удалось распаковать агент: {res.stderr.strip()[:300]}", "deploy_failed")
         return {"deployed": True, "sha256": digest, "bytes": len(data)}
 
-    def start(self, t: Target) -> dict:
+    def start(self, t: Target, token: str | None = None, ca_pem: str | None = None) -> dict:
+        """Запускает агента. Токен и сертификат передаются через stdin, а не в командной строке
+        (аргументы видны в `ps`). Если агент уже работает, он останавливается: старый токен недействителен."""
         d = self._d()
+        flags = []
+        if token:
+            flags += ["--token-file", "agent.token"]
+        if ca_pem:
+            flags += ["--ca-file", "ca.pem"]
         agent_cmd = " ".join(
             shlex.quote(x)
             for x in [
                 self.cfg.python, "-m", "videofetch_agent",
                 "--coordinator", self.cfg.coordinator_url,
                 "--name", t.name,
+                *flags,
                 *(["--url-template", self.cfg.url_template] if self.cfg.url_template else []),
             ]
         )
-        script = (
-            f"cd {d} || exit 3; "
+        payload = b""
+        prep = ""
+        if token or ca_pem:
+            # stdin: строка токена, затем PEM. Файлы создаются с правами 0600.
+            prep = (
+                "umask 077; IFS= read -r tok; "
+                + ("printf '%s' \"$tok\" > agent.token; " if token else "")
+                + ("cat > ca.pem; " if ca_pem else "cat > /dev/null; ")
+            )
+            payload = ((token or "") + "\n").encode() + (ca_pem or "").encode()
+        stop_old = (
+            "if [ -f agent.pid ] && kill -0 \"$(cat agent.pid)\" 2>/dev/null; then "
+            "kill \"$(cat agent.pid)\"; for i in 1 2 3 4 5 6 7 8 9 10; do "
+            "kill -0 \"$(cat agent.pid)\" 2>/dev/null || break; sleep 1; done; "
+            "kill -9 \"$(cat agent.pid)\" 2>/dev/null; fi; "
+        )
+        keep_running = (
             "if [ -f agent.pid ] && kill -0 \"$(cat agent.pid)\" 2>/dev/null; then echo already_running; exit 0; fi; "
+        )
+        script = (
+            f"cd {d} || exit 3; {prep}"
+            f"{stop_old if token else keep_running}"
             f"nohup {agent_cmd} >> agent.log 2>&1 < /dev/null & echo $! > agent.pid; sleep 1; "
             "if kill -0 \"$(cat agent.pid)\" 2>/dev/null; then echo started; else echo crashed; exit 4; fi"
         )
-        res = self.run(t, script)
+        res = self.run(t, script, stdin=payload or None)
         if res.returncode == 3:
             raise RemoteError("Агент не развёрнут на сервере (сначала deploy)", "not_deployed")
         if res.returncode != 0:

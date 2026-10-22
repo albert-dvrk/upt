@@ -34,3 +34,18 @@ class RemoteError(ServiceError):
 
     status_code = 502
     code = "remote_error"
+
+
+class Unauthorized(ServiceError):
+    status_code = 401
+    code = "unauthorized"
+
+
+class Forbidden(ServiceError):
+    status_code = 403
+    code = "forbidden"
+
+
+class TooManyRequests(ServiceError):
+    status_code = 429
+    code = "too_many_attempts"

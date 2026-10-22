@@ -35,3 +35,8 @@ button.link{border:0;background:none;color:var(--accent);padding:2px 4px}
 .charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:20px}canvas{max-height:220px}
 .toast{position:fixed;right:20px;bottom:20px;background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:8px;z-index:20;max-width:480px}
 @media(max-width:700px){main{padding:12px}.grid,.charts{grid-template-columns:1fr}header{flex-wrap:wrap}}
+
+[x-cloak]{display:none!important}
+.who{font-size:13px;color:var(--muted)}.who b{color:var(--fg)}
+.login{max-width:380px;margin:60px auto}.login form{display:grid;gap:12px}.err{color:var(--bad);margin:0}
+select{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}

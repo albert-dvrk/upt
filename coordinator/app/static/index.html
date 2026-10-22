@@ -9,22 +9,38 @@
 <script defer src="app.js"></script>
 <script defer src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/3.14.1/cdn.min.js"></script>
 </head>
-<body x-data="app()" x-init="init()">
+<body x-data="app()" x-init="init()" x-cloak>
 
 <header>
   <h1>videofetch</h1>
-  <nav>
+  <nav x-show="me">
     <button :class="{on: tab==='jobs'}" @click="tab='jobs'">Задания</button>
     <button :class="{on: tab==='workers'}" @click="tab='workers'">Серверы</button>
+    <button x-show="can('administrator')" :class="{on: tab==='users'}" @click="openUsers()">Пользователи и аудит</button>
   </nav>
-  <span class="conn" :class="online ? 'ok' : 'bad'" x-text="online ? 'координатор на связи' : 'нет связи с координатором'"></span>
+  <span class="conn" x-show="me" :class="online ? 'ok' : 'bad'" x-text="online ? 'координатор на связи' : 'нет связи с координатором'"></span>
+  <span class="who" x-show="me"><b x-text="me && me.username"></b> · <span x-text="me && me.roles[0]"></span>
+    <button class="link" @click="doLogout()">выйти</button></span>
 </header>
+
+<!-- ================= ВХОД ================= -->
+<main x-show="authChecked && !me">
+  <section class="card login">
+    <h2>Вход</h2>
+    <form @submit.prevent="doLogin()">
+      <label>Имя пользователя <input required autocomplete="username" x-model="login.username"></label>
+      <label>Пароль <input required type="password" autocomplete="current-password" x-model="login.password"></label>
+      <p class="err" x-show="login.error" x-text="login.error"></p>
+      <button class="primary" :disabled="login.busy">Войти</button>
+    </form>
+  </section>
+</main>
 
 <div class="toast" x-show="toast" x-text="toast" x-transition></div>
 
 <!-- ================= ЗАДАНИЯ ================= -->
-<main x-show="tab==='jobs'">
-  <section class="card">
+<main x-show="me && tab==='jobs'">
+  <section class="card" x-show="can('operator')">
     <h2>Новое задание</h2>
     <form class="row" @submit.prevent="createJob()">
       <label>Название <input required maxlength="128" x-model="form.name"></label>
@@ -67,7 +83,7 @@
     <div class="titlebar">
       <h2>Задание #<span x-text="job.id"></span> — <span x-text="job.name"></span>
         <span class="badge" :class="job.status" x-text="statusRu(job.status)"></span></h2>
-      <div class="actions">
+      <div class="actions" x-show="can('operator')">
         <button @click="jobAction('start')" :disabled="job.status!=='created'">Запустить</button>
         <button @click="jobAction('pause')" :disabled="job.status!=='running'">Пауза</button>
         <button @click="jobAction('resume')" :disabled="job.status!=='paused'">Продолжить</button>
@@ -98,7 +114,7 @@
       </div>
       <div>
         <h3>Параметры «на лету»</h3>
-        <form class="row" @submit.prevent="patchJob()">
+        <form class="row" x-show="can('operator')" @submit.prevent="patchJob()">
           <label>Потоков <input type="number" min="1" x-model.number="edit.threads"></label>
           <label>Лимит запросов/с <input type="number" min="0.1" step="0.1" x-model.number="edit.rps" placeholder="нет"></label>
           <button>Применить</button>
@@ -110,9 +126,9 @@
               <tr>
                 <td x-text="w.name"></td>
                 <td><span class="badge" :class="w.worker_status" x-text="statusRu(w.worker_status)"></span></td>
-                <td><input class="tiny" type="number" min="1" :value="w.threads" @change="setWorkerThreads(w, $event.target.value)"></td>
+                <td><input class="tiny" type="number" min="1" :disabled="!can('operator')" :value="w.threads" @change="setWorkerThreads(w, $event.target.value)"></td>
                 <td x-text="w.rate_limit_rps ? w.rate_limit_rps.toFixed(1) : '—'"></td>
-                <td><button class="link" @click="toggleWorker(w)" x-text="w.enabled ? 'отключить' : 'включить'"></button></td>
+                <td><button class="link" x-show="can('operator')" @click="toggleWorker(w)" x-text="w.enabled ? 'отключить' : 'включить'"></button></td>
               </tr>
             </template>
           </tbody>
@@ -150,6 +166,19 @@
       </div>
     </div>
 
+    <h3>Скачанные файлы <span class="muted" x-text="'('+files.total+')'"></span></h3>
+    <div class="scroll">
+      <table class="small">
+        <thead><tr><th>ID</th><th>Название</th><th>Размер</th><th>SHA-256</th><th>Путь на сервере</th><th>Сервер</th></tr></thead>
+        <tbody><template x-for="f in files.files" :key="f.external_id">
+          <tr><td x-text="f.external_id"></td><td x-text="f.title ?? '—'"></td><td x-text="fmtBytes(f.size_bytes)"></td>
+              <td x-text="f.checksum_sha256.slice(0,12)+'…'" :title="f.checksum_sha256"></td>
+              <td x-text="f.storage_path"></td><td x-text="workerName(f.worker_id)"></td></tr>
+        </template>
+        <tr x-show="!files.files.length"><td colspan="6" class="muted">файлов пока нет</td></tr></tbody>
+      </table>
+    </div>
+
     <h3>События</h3>
     <div class="scroll tall">
       <table class="small">
@@ -163,9 +192,56 @@
   </template>
 </main>
 
-<!-- ================= СЕРВЕРЫ ================= -->
-<main x-show="tab==='workers'">
+<!-- ================= ПОЛЬЗОВАТЕЛИ И АУДИТ ================= -->
+<main x-show="me && tab==='users' && can('administrator')">
   <section class="card">
+    <h2>Новый пользователь</h2>
+    <form class="row" @submit.prevent="createUser()">
+      <label>Имя <input required minlength="3" pattern="[A-Za-z0-9][A-Za-z0-9._-]*" autocomplete="off" x-model="uform.username"></label>
+      <label>Пароль <input required type="password" minlength="10" autocomplete="new-password" x-model="uform.password"></label>
+      <label>Роль <select x-model="uform.role"><option value="viewer">наблюдатель</option><option value="operator">оператор</option><option value="administrator">администратор</option></select></label>
+      <button class="primary">Создать</button>
+    </form>
+    <p class="muted">Пароль: не менее 10 символов, строчные и заглавные буквы и цифры.</p>
+  </section>
+  <section class="card">
+    <h2>Пользователи</h2>
+    <table>
+      <thead><tr><th>Имя</th><th>Роль</th><th>Статус</th><th>Создан</th><th></th></tr></thead>
+      <tbody>
+        <template x-for="u in users" :key="u.id">
+          <tr>
+            <td x-text="u.username"></td>
+            <td><select :value="u.roles[0]" @change="setUserRole(u, $event.target.value)">
+              <option value="viewer">наблюдатель</option><option value="operator">оператор</option><option value="administrator">администратор</option></select></td>
+            <td><span class="badge" :class="u.is_active ? 'online' : 'disabled'" x-text="u.is_active ? 'активен' : 'отключён'"></span></td>
+            <td x-text="fmtTime(u.created_at)"></td>
+            <td class="actions"><button class="link" @click="toggleUser(u)" x-text="u.is_active ? 'отключить' : 'включить'"></button>
+              <button class="link" @click="resetPassword(u)">сменить пароль</button></td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </section>
+  <section class="card">
+    <div class="titlebar"><h2>Журнал аудита</h2>
+      <form class="row" @submit.prevent="loadUsers()"><label>Действие <input x-model="auditAction" placeholder="например, job_stop"></label><button>Показать</button></form></div>
+    <div class="scroll tall">
+      <table class="small">
+        <thead><tr><th>Время</th><th>Пользователь</th><th>Действие</th><th>Объект</th><th>IP</th><th>Подробности</th></tr></thead>
+        <tbody><template x-for="a in audit" :key="a.id">
+          <tr><td x-text="fmtTime(a.ts)"></td><td x-text="a.username ?? '—'"></td><td x-text="a.action"></td>
+              <td x-text="(a.target_type ?? '')+' '+(a.target_id ?? '')"></td><td x-text="a.ip ?? ''"></td>
+              <td x-text="a.details ? JSON.stringify(a.details) : ''"></td></tr>
+        </template></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<!-- ================= СЕРВЕРЫ ================= -->
+<main x-show="me && tab==='workers'">
+  <section class="card" x-show="can('administrator')">
     <h2>Добавить сервер</h2>
     <form class="row" @submit.prevent="createWorker()">
       <label>Имя <input required pattern="[A-Za-z0-9][A-Za-z0-9._-]*" x-model="wform.name"></label>
@@ -192,12 +268,13 @@
             <td x-text="w.agent_version ?? '—'"></td>
             <td x-text="w.resources && w.resources.disk_free_bytes ? fmtBytes(w.resources.disk_free_bytes) : '—'"></td>
             <td x-text="w.last_heartbeat_at ? ago(w.last_heartbeat_at) : '—'"></td>
-            <td class="actions">
+            <td class="actions" x-show="can('administrator')">
               <button @click="agentOp(w,'check')">Проверить SSH</button>
               <button @click="agentOp(w,'deploy')">Развернуть</button>
               <button @click="agentOp(w,'start')">Запустить</button>
               <button @click="agentOp(w,'stop')">Остановить</button>
               <button class="link" @click="toggleEnabled(w)" x-text="w.enabled ? 'отключить' : 'включить'"></button>
+              <button class="link" @click="revokeToken(w)">отозвать токен</button>
             </td>
           </tr>
         </template>

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ssl
 from typing import Any
 
 from .http import NetworkError, json_request
@@ -18,16 +19,18 @@ class CoordinatorError(Exception):
 
 
 class CoordinatorClient:
-    def __init__(self, base_url: str, worker_name: str, *, token: str | None = None, timeout: float = 10) -> None:
+    def __init__(self, base_url: str, worker_name: str, *, token: str | None = None, timeout: float = 10, ca_file: str | None = None) -> None:
         self.base = base_url.rstrip("/")
         self.name = worker_name
         self.timeout = timeout
         self.token = token
+        # Свой сертификат доверяется только для обращений к координатору, не к целевому серверу.
+        self.context = ssl.create_default_context(cafile=ca_file) if ca_file else None
         self.worker_id: int | None = None
 
     def _call(self, method: str, path: str, payload: Any = None) -> dict:
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else None
-        resp = json_request(method, self.base + path, payload, timeout=self.timeout, headers=headers)
+        resp = json_request(method, self.base + path, payload, timeout=self.timeout, headers=headers, context=self.context)
         if resp.status >= 400:
             try:
                 data = resp.json()

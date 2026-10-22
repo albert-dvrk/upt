@@ -22,6 +22,17 @@ class Settings(BaseSettings):
     default_url_template: str = "http://mock:8080/{id}"
     allowed_target_hosts: str = "mock,localhost,127.0.0.1"
 
+    # Аутентификация и сессии
+    auth_enabled: bool = True
+    secret_key: str | None = None  # ключ подписи сессий; если не задан — случайный на время работы процесса
+    session_ttl_seconds: int = 8 * 3600
+    cookie_secure: bool = False  # True при работе по HTTPS
+    admin_username: str = "admin"
+    admin_password: str | None = None  # создаёт первого администратора, если пользователей ещё нет
+    login_max_failures: int = 5
+    login_lock_seconds: int = 60
+    agent_ca_file: str | None = None  # сертификат координатора, который заливается на серверы (HTTPS)
+
     # Развёртывание агентов по SSH
     agent_source_dir: str = "/srv/agent"
     agent_coordinator_url: str = "http://coordinator:8000"  # как агент видит координатор

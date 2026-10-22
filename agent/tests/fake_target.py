@@ -74,6 +74,7 @@ class Target:
                 digest = "0" * 64 if vid in target.corrupt else hashlib.sha256(data).hexdigest()
                 meta = {
                     "id": vid, "title": target.titles.get(vid, f"Видео {vid}"),
+                    "page_url": f"{target.base}/{vid}", "mime_type": "video/mp4",
                     "download_url": f"{target.base}/files/{vid}/video.mp4", "size_bytes": len(data),
                     "sha256": digest, "downloadable": True,
                 }

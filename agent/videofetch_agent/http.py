@@ -27,11 +27,11 @@ def _headers(msg) -> dict[str, str]:
     return {k.lower(): v for k, v in msg.items()}
 
 
-def request(method: str, url: str, *, headers: dict | None = None, body: bytes | None = None, timeout: float = 10) -> Response:
+def request(method: str, url: str, *, headers: dict | None = None, body: bytes | None = None, timeout: float = 10, context=None) -> Response:
     """Обычный запрос. Коды 4xx/5xx возвращаются как Response, а не исключением."""
     req = urllib.request.Request(url, data=body, method=method, headers=headers or {})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
             return Response(resp.status, _headers(resp.headers), resp.read())
     except urllib.error.HTTPError as exc:
         try:
@@ -43,13 +43,13 @@ def request(method: str, url: str, *, headers: dict | None = None, body: bytes |
         raise NetworkError(str(exc)) from exc
 
 
-def json_request(method: str, url: str, payload=None, *, timeout: float = 10, headers: dict | None = None) -> Response:
+def json_request(method: str, url: str, payload=None, *, timeout: float = 10, headers: dict | None = None, context=None) -> Response:
     body = None
     hdrs = {"Accept": "application/json", **(headers or {})}
     if payload is not None:
         body = json.dumps(payload).encode("utf-8")
         hdrs["Content-Type"] = "application/json"
-    return request(method, url, headers=hdrs, body=body, timeout=timeout)
+    return request(method, url, headers=hdrs, body=body, timeout=timeout, context=context)
 
 
 class StreamResponse:

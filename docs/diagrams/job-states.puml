@@ -1,0 +1,37 @@
+@startuml job-states
+!theme plain
+skinparam defaultFontName DejaVu Sans
+skinparam shadowing false
+title Диаграмма состояний задания
+
+[*] --> created
+created --> validating : start
+created --> stopped : stop (отмена)
+validating --> running : проверка пройдена\n(есть доступные серверы)
+validating --> failed : ошибка конфигурации
+running --> pausing : pause (мягкая)
+running --> stopping : stop
+running --> completed : все блоки в конечных\nсостояниях / достигнут предел
+running --> failed : критическая ошибка
+pausing --> paused : текущие блоки завершены
+pausing --> stopping : stop
+pausing --> failed
+paused --> running : resume
+paused --> stopping : stop
+paused --> failed
+stopping --> stopped : блоки освобождены,\nконтрольные точки сохранены
+stopping --> failed
+
+stopped --> [*]
+completed --> [*]
+failed --> [*]
+
+note bottom of completed
+  Конечные состояния: stopped, completed, failed.
+  Повторный запуск возможен только как новая попытка.
+end note
+note right of pausing
+  Мягкая пауза: новые блоки не выдаются,
+  выданные дорабатываются.
+end note
+@enduml

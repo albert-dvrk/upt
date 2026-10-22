@@ -115,3 +115,32 @@ def test_block_stop_does_not_leak_into_global_event(target, tmp_path):
     proc = ChunkProcessor(client, RateGate(), Counters(), report_every=2)
     proc.process(make_chunk(target, tmp_path, 0, 29), stop)
     assert not stop.is_set()
+
+
+def test_coordinator_5xx_is_waited_out_not_counted_as_chunk_failure(target, tmp_path):
+    from videofetch_agent.client import CoordinatorError
+
+    class Flaky(StubClient):
+        def progress(self, chunk_id, next_id, items):
+            if not hasattr(self, "n"):
+                self.n = 0
+            self.n += 1
+            if self.n <= 2:
+                raise CoordinatorError(503, "unavailable", "БД перезапускается")
+            return super().progress(chunk_id, next_id, items)
+
+    client = Flaky()
+    _, result = run(target, tmp_path, client, end=29)
+    assert result == "completed"
+    assert sorted(all_items(client)) == list(range(30))  # ничего не потеряно
+
+
+def test_coordinator_4xx_is_not_swallowed(target, tmp_path):
+    from videofetch_agent.client import CoordinatorError
+
+    class Broken(StubClient):
+        def progress(self, chunk_id, next_id, items):
+            raise CoordinatorError(422, "bad_next_id", "x")
+
+    with pytest.raises(CoordinatorError):
+        run(target, tmp_path, Broken(), end=29)

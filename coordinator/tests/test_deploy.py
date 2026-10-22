@@ -153,3 +153,23 @@ def test_remote_dir_validation(env):
         cfg.remote_dir = bad
         with pytest.raises(ValueError):
             SshDeployer(cfg, FakeRunner())
+
+
+def test_start_with_token_passes_secrets_via_stdin_only(env):
+    cfg, t, _ = env
+    runner = FakeRunner([Result(0, "started\n", "")])
+    SshDeployer(cfg, runner).start(t, token="TOKEN-123", ca_pem="-----BEGIN CERTIFICATE-----\nabc\n")
+    args, stdin, _ = runner.calls[0]
+    remote = args[-1]
+    assert "TOKEN-123" not in " ".join(args)  # в командной строке (виден в ps) токена нет
+    assert stdin.decode().startswith("TOKEN-123\n-----BEGIN CERTIFICATE-----")
+    assert "--token-file agent.token" in remote and "--ca-file ca.pem" in remote
+    assert "umask 077" in remote
+    assert "already_running" not in remote  # со свежим токеном старый агент перезапускается
+
+
+def test_start_without_token_keeps_running_agent(env):
+    cfg, t, _ = env
+    runner = FakeRunner([Result(0, "already_running\n", "")])
+    SshDeployer(cfg, runner).start(t)
+    assert "already_running" in runner.calls[0][0][-1] and runner.calls[0][1] is None

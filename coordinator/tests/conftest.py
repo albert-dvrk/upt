@@ -4,6 +4,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.config import Settings
 from app.main import create_app
 from app.models import Base
 
@@ -29,6 +30,6 @@ def session(session_factory):
 
 @pytest.fixture
 def client(session_factory):
-    app = create_app(session_factory, background=False)
+    app = create_app(session_factory, background=False, settings=Settings(auth_enabled=False))
     with TestClient(app) as c:
         yield c

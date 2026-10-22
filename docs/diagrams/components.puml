@@ -1,0 +1,47 @@
+@startuml components
+!theme plain
+skinparam defaultFontName DejaVu Sans
+skinparam componentStyle rectangle
+skinparam shadowing false
+title Диаграмма компонентов videofetch
+
+actor "Оператор" as User
+node "Браузер" {
+  component "Веб-интерфейс\n(HTML + Alpine.js + Chart.js)" as UI
+}
+
+node "Координатор (FastAPI)" as Coord {
+  component "HTTP API\n/api/jobs, /api/workers" as API
+  component "Сервис заданий\n(диапазоны, автомат состояний)" as Jobs
+  component "Сервис аренды блоков\n(lease / progress / complete / fail)" as Leases
+  component "Reaper\n(фоновая проверка аренд и heartbeat)" as Reaper
+  component "SSH-развёртыватель\n(deploy / start / stop)" as Deploy
+}
+
+database "PostgreSQL\n(источник достоверного состояния)" as DB
+
+node "Рабочий сервер (×N)" as Worker {
+  component "Агент\n(регистрация, heartbeat, метрики)" as Agent
+  component "Обработчик блока\n(пул потоков, контрольные точки)" as Proc
+  component "Загрузчик\n(Range, .part, SHA-256, повторы)" as Fetch
+  folder "Хранилище\n/data/videos" as Disk
+}
+
+cloud "Целевой HTTP-сервис\n(mock-хостинг)" as Target
+
+User --> UI
+UI --> API : REST, опрос раз в 2 с
+API --> Jobs
+API --> Leases
+API --> Deploy
+Jobs --> DB
+Leases --> DB : SELECT … FOR UPDATE SKIP LOCKED
+Reaper --> DB
+Reaper ..> Leases : возврат просроченных блоков
+Deploy --> Worker : SSH (по ключу): архив агента, запуск
+Agent --> API : register, heartbeat,\nlease, progress, complete
+Agent --> Proc
+Proc --> Fetch
+Fetch --> Target : GET /{id}, GET /files/…
+Fetch --> Disk : запись .part → rename
+@enduml

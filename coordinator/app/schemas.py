@@ -158,11 +158,44 @@ class HeartbeatResponse(BaseModel):
 # ------------------------------------------------------------------ блоки и результаты
 
 
+_SHA256 = r"^[0-9a-f]{64}$"
+
+
+class MediaIn(BaseModel):
+    """Метаданные найденного материала (раздел 8 задания)."""
+
+    title: str | None = Field(None, max_length=1000)  # исходное название; в путях не используется
+    page_url: str = Field(max_length=1024)
+    download_url: str | None = Field(None, max_length=2048)
+    mime_type: str | None = Field(None, max_length=128)
+    size_bytes: int | None = Field(None, ge=0)
+    checksum_sha256: str | None = Field(None, pattern=_SHA256)
+
+
+class FileIn(BaseModel):
+    """Скачанный файл. Путь — относительный (от каталога хранения сервера), без «..» и абсолютных частей."""
+
+    storage_path: str = Field(min_length=1, max_length=1024)
+    size_bytes: int = Field(ge=0)
+    mime_type: str | None = Field(None, max_length=128)
+    checksum_sha256: str = Field(pattern=_SHA256)
+
+    @field_validator("storage_path")
+    @classmethod
+    def _safe_path(cls, v: str) -> str:
+        parts = v.split("/")
+        if v.startswith("/") or "\\" in v or "\x00" in v or any(p in ("", ".", "..") for p in parts):
+            raise ValueError("Недопустимый путь файла: нужен относительный путь без «..»")
+        return v
+
+
 class ItemIn(BaseModel):
     external_id: int = Field(ge=0)
     status: ItemStatus
     http_status: int | None = Field(None, ge=100, le=599)
     error_code: str | None = Field(None, max_length=64)
+    media: MediaIn | None = None
+    file: FileIn | None = None
 
 
 class ChunkSettings(BaseModel):
@@ -336,3 +369,19 @@ class JobOut(ORMModel):
 class JobDetail(JobOut):
     stats: dict[str, Any]
     workers: list[JobWorkerOut]
+
+
+class FileOut(BaseModel):
+    external_id: int
+    title: str | None
+    mime_type: str | None
+    size_bytes: int
+    checksum_sha256: str
+    storage_path: str
+    worker_id: int | None
+    completed_at: dt.datetime
+
+
+class FilePage(BaseModel):
+    total: int
+    files: list[FileOut]

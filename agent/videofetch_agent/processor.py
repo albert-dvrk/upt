@@ -7,7 +7,7 @@ import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Callable
 
-from .client import CoordinatorClient, LeaseLost
+from .client import CoordinatorClient, CoordinatorError, LeaseLost
 from .fetcher import FetchSettings, Fetcher, Outcome, Stop
 from .http import NetworkError
 from .util import RateGate
@@ -112,7 +112,9 @@ class ChunkProcessor:
                         try:
                             self.client.complete(chunk["chunk_id"], items)
                             return True
-                        except NetworkError:
+                        except (NetworkError, CoordinatorError) as exc:
+                            if isinstance(exc, CoordinatorError) and exc.status < 500:
+                                raise  # 4xx — ошибка протокола, повтор не поможет
                             if attempt == 2:
                                 self.log("не удалось отправить завершение блока; аренда истечёт и блок будет выдан повторно")
                                 return False
@@ -121,7 +123,9 @@ class ChunkProcessor:
             except LeaseLost:
                 self.log(f"аренда блока {chunk['chunk_id']} потеряна")
                 return False
-            except NetworkError as exc:
+            except (NetworkError, CoordinatorError) as exc:
+                if isinstance(exc, CoordinatorError) and exc.status < 500:
+                    raise  # 4xx — ошибка протокола, повтор не поможет
                 self.log(f"координатор недоступен: {exc}")  # результаты остаются в unsent, повторим позже
                 return True
             unsent, since_report = [], 0
