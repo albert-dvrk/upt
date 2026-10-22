@@ -34,6 +34,10 @@ async function api(method, path, body) {
 
 // Графики хранятся вне реактивного состояния Alpine: Proxy ломает внутренности Chart.js
 const CHARTS = {};
+// Объекты терминала (WebSocket, xterm.js) — тоже вне реактивного состояния
+let TERM = null;
+const ANSI_RE = /\x1b\[[0-9;?]*[ -\/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[@-Z\\-_]/g;
+const KEYS = { Enter: "\r", Backspace: "\x7f", Tab: "\t", Escape: "\x1b", ArrowUp: "\x1b[A", ArrowDown: "\x1b[B", ArrowRight: "\x1b[C", ArrowLeft: "\x1b[D", Home: "\x1b[H", End: "\x1b[F", Delete: "\x1b[3~" };
 
 function app() {
   return {
@@ -45,10 +49,11 @@ function app() {
     metricWorker: null, tick: 0, lastErr: "",
     me: null, authChecked: false, login: { username: "", password: "", error: "", busy: false },
     alerts: [], downloads: [], alertsOpen: false,
+    term: { open: false, server: "", state: "closed", text: "" },
     users: [], audit: [], auditAction: "", uform: { username: "", password: "", role: "viewer" }, pollStarted: false,
 
     async init() {
-      onUnauthorized = () => { this.me = null; CSRF = ""; };
+      onUnauthorized = () => { this.closeTerminal(); this.me = null; CSRF = ""; };
       try {
         const me = await api("GET", "/api/auth/me");
         this.setMe(me);
@@ -72,6 +77,7 @@ function app() {
     },
     async doLogout() {
       try { await api("POST", "/api/auth/logout"); } catch (_) { /* сессия уже закончилась */ }
+      this.closeTerminal();
       this.me = null; CSRF = ""; this.job = null; this.jobs = []; this.workers = [];
     },
     async openUsers() {
@@ -254,6 +260,69 @@ function app() {
         this.say(`${w.name}: ${op} — ${r.state || r.python || (r.deployed ? "развёрнуто" : "ок")}`);
         await this.refresh();
       });
+    },
+
+    // ---------- SSH-терминал (WebSocket-шлюз координатора)
+    async openTerminal(w) {
+      this.closeTerminal();
+      this.term = { open: true, server: w.name, state: "connecting", text: "подключение…" };
+      await this.$nextTick();
+      const box = document.getElementById("termBox");
+      box.innerHTML = "";
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      const ws = new WebSocket(`${proto}//${location.host}/api/workers/${w.id}/terminal`);
+      const t = (TERM = { ws, x: null, cleanup: [], ready: false });
+      const send = (obj) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); };
+      let write, onResize = () => {};
+      if (window.Terminal) {
+        const x = new Terminal({ cursorBlink: true, fontSize: 14, rows: 24, scrollback: 3000 });
+        const fit = window.FitAddon ? new FitAddon.FitAddon() : null;
+        if (fit) x.loadAddon(fit);
+        x.open(box);
+        onResize = () => { try { if (fit) fit.fit(); } catch (_) {} send({ type: "resize", rows: x.rows, cols: x.cols }); };
+        x.onData((d) => send({ type: "input", data: d }));
+        window.addEventListener("resize", onResize);
+        t.cleanup.push(() => window.removeEventListener("resize", onResize), () => x.dispose());
+        write = (s) => x.write(s);
+        x.focus();
+      } else {  // xterm.js не загрузился (нет доступа к CDN): упрощённый режим без раскраски и курсорного ввода
+        const pre = document.createElement("pre");
+        box.appendChild(pre);
+        let text = "упрощённый режим терминала (xterm.js не загружен)\n";
+        write = (s) => {
+          text += s.replace(ANSI_RE, "").replace(/\r\n/g, "\n").replace(/\r/g, "");
+          while (text.includes("\b")) text = text.replace(/[^\n]?\x08/, "");
+          text = text.slice(-30000);
+          pre.textContent = text; pre.scrollTop = pre.scrollHeight;
+        };
+        const onKey = (e) => {
+          let d = KEYS[e.key];
+          if (!d && e.ctrlKey && e.key.length === 1) d = String.fromCharCode(e.key.toUpperCase().charCodeAt(0) & 31);
+          if (!d && e.key.length === 1 && !e.ctrlKey && !e.metaKey) d = e.key;
+          if (d) { e.preventDefault(); send({ type: "input", data: d }); }
+        };
+        box.addEventListener("keydown", onKey);
+        t.cleanup.push(() => box.removeEventListener("keydown", onKey));
+        box.focus();
+      }
+      ws.onopen = () => onResize();
+      ws.onmessage = (ev) => {
+        let m; try { m = JSON.parse(ev.data); } catch (_) { return; }
+        if (m.type === "output") write(m.data);
+        else if (m.type === "ready") { t.ready = true; this.term.state = "online"; this.term.text = "подключено"; onResize(); }
+        else if (m.type === "notice") write(`\r\n\x1b[33m[${m.message}]\x1b[0m\r\n`);
+        else if (m.type === "closed") write(`\r\n\x1b[33m[${m.message}]\x1b[0m\r\n`);
+        else if (m.type === "error") write(`\r\n\x1b[31m[${m.message}]\x1b[0m\r\n`);
+      };
+      ws.onclose = () => {
+        if (TERM !== t) return;
+        this.term.state = "closed";
+        this.term.text = t.ready ? "сеанс завершён" : "не удалось подключиться (нужна роль администратора, возможно исчерпан лимит сеансов)";
+      };
+    },
+    closeTerminal() {
+      if (TERM) { const t = TERM; TERM = null; try { t.ws.close(); } catch (_) {} t.cleanup.forEach((f) => { try { f(); } catch (_) {} }); }
+      this.term = { open: false, server: "", state: "closed", text: "" };
     },
 
     // ---------- метрики

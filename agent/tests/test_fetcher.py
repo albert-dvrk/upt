@@ -84,6 +84,19 @@ def test_checksum_mismatch_removes_file(fetcher, settings, target):
     assert not os.path.exists(final) and not os.path.exists(final + ".part")
 
 
+def test_corrupt_part_file_is_discarded_and_downloaded_again(fetcher, settings, target):
+    _, meta = fetcher.check(3, settings)
+    final = fetcher.target_path(3, meta, settings)
+    os.makedirs(os.path.dirname(final), exist_ok=True)
+    with open(final + ".part", "wb") as fh:
+        fh.write(b"\xff" * 50_000)  # мусор вместо начала файла
+    out = fetcher.download(3, meta, settings)
+    assert out.status == "completed"
+    assert target.ranges == ["bytes=50000-", None]  # сначала докачка, затем полная перекачка
+    assert open(final, "rb").read() == content(3, 300_000)
+    assert not os.path.exists(final + ".part")
+
+
 def test_already_downloaded_file_is_not_fetched_again(fetcher, settings, target):
     _, meta = fetcher.check(1, settings)
     fetcher.download(1, meta, settings)

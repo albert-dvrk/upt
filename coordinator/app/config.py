@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     ssh_known_hosts: str = "/tmp/vf_known_hosts"
     ssh_connect_timeout: int = 10
 
+    # Веб-терминал SSH (только администраторы)
+    terminal_enabled: bool = True
+    terminal_idle_seconds: int = 300  # неактивный сеанс закрывается
+    terminal_max_seconds: int = 1800  # предельная длительность сеанса
+    terminal_max_sessions: int = 5  # одновременных сеансов на процесс координатора
+    terminal_max_commands_logged: int = 500  # записей о командах в аудите на сеанс
+
     @property
     def allowed_hosts(self) -> frozenset[str]:
         return frozenset(h.strip().lower() for h in self.allowed_target_hosts.split(",") if h.strip())

@@ -6,6 +6,9 @@
 <title>videofetch — панель управления</title>
 <link rel="stylesheet" href="style.css">
 <script defer src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+<script defer src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
 <script defer src="app.js"></script>
 <script defer src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/3.14.1/cdn.min.js"></script>
 </head>
@@ -307,6 +310,7 @@
               <button @click="agentOp(w,'deploy')">Развернуть</button>
               <button @click="agentOp(w,'start')">Запустить</button>
               <button @click="agentOp(w,'stop')">Остановить</button>
+              <button @click="openTerminal(w)" title="SSH-терминал через шлюз координатора; действия журналируются">Терминал</button>
               <button class="link" @click="toggleEnabled(w)" x-text="w.enabled ? 'отключить' : 'включить'"></button>
               <button class="link" @click="revokeToken(w)">отозвать токен</button>
             </td>
@@ -315,6 +319,14 @@
         <tr x-show="!workers.length"><td colspan="7" class="muted">серверов пока нет</td></tr>
       </tbody>
     </table>
+  </section>
+
+  <section class="card" x-show="term.open && can('administrator')">
+    <h2>Терминал: <span x-text="term.server"></span>
+      <span class="badge" :class="term.state==='online' ? 'online' : (term.state==='closed' ? 'offline' : 'degraded')" x-text="term.text"></span>
+      <button class="link" @click="closeTerminal()">закрыть</button></h2>
+    <p class="muted">Соединение устанавливает координатор, ключи в браузер не передаются. Сеанс закрывается при простое и по предельному времени; открытие, команды и блокировки записываются в журнал аудита. Опасные команды (rm -rf /, sudo, reboot и т. п.) блокируются политикой.</p>
+    <div id="termBox" class="termbox" tabindex="0"></div>
   </section>
 
   <section class="card" x-show="metricWorker">

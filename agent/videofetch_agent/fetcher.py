@@ -168,7 +168,7 @@ class Fetcher:
         out.media = media_from(vid, meta, s)
         return out
 
-    def _download(self, vid: int, meta: dict, s: FetchSettings) -> Outcome:
+    def _download(self, vid: int, meta: dict, s: FetchSettings, _fresh: bool = False) -> Outcome:
         url = meta.get("download_url")
         if not url or not meta.get("downloadable", True):
             return Outcome(vid, "skipped", None, "not_downloadable")
@@ -191,6 +191,9 @@ class Fetcher:
                 return Outcome(vid, "failed", None, "disk_full")
 
         part = final + ".part"
+        if _fresh and os.path.exists(part):
+            os.remove(part)
+        resumed = os.path.exists(part)  # докачиваем чужой/старый .part: он мог быть повреждён
         retries = waits = 0
         while True:
             if self.stop.is_set():
@@ -245,6 +248,8 @@ class Fetcher:
 
         if not self._matches(part, size, digest):
             os.remove(part)  # повреждённый файл не оставляем
+            if resumed and not _fresh:  # битый .part мог испортить результат докачки — один раз качаем с нуля
+                return self._download(vid, meta, s, _fresh=True)
             return Outcome(vid, "failed", 200, "checksum_mismatch")
         os.replace(part, final)  # атомарное появление готового файла
         return self._finish(vid, meta, s, final)

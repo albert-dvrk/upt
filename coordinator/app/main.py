@@ -21,6 +21,7 @@ from app import API_VERSION, __version__
 from app.api import auth as auth_api
 from app.api import jobs as jobs_api
 from app.api import monitoring as monitoring_api
+from app.api import terminal as terminal_api
 from app.api import users as users_api
 from app.api import workers as workers_api
 from app.background import reaper_loop
@@ -34,8 +35,8 @@ from app.services.errors import ServiceError
 log = logging.getLogger("videofetch.coordinator")
 
 CSP = (
-    "default-src 'self'; script-src 'self' 'unsafe-eval' https://cdnjs.cloudflare.com; "
-    "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
+    "default-src 'self'; script-src 'self' 'unsafe-eval' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; connect-src 'self'; "
     "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 )
 
@@ -85,6 +86,7 @@ def create_app(
     if settings.auth_enabled and not settings.secret_key:
         log.warning("VF_SECRET_KEY не задан: ключ сессий случайный, после перезапуска все войдут заново")
     application.state.secret_key = settings.secret_key or secrets.token_hex(32)
+    application.state.terminal_sessions = 0
     application.state.login_throttle = auth_svc.LoginThrottle(settings.login_max_failures, settings.login_lock_seconds)
     application.state.agent_ca_pem = _read_ca(settings.agent_ca_file)
     application.state.deployer = deployer or SshDeployer(
@@ -104,6 +106,7 @@ def create_app(
     application.include_router(jobs_api.router)
     application.include_router(monitoring_api.router)
     application.include_router(workers_api.router)
+    application.include_router(terminal_api.router)
 
     static_dir = Path(__file__).parent / "static"
     if static_dir.is_dir():

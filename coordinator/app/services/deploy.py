@@ -114,6 +114,15 @@ class SshDeployer:
             remote,
         ]
 
+    def interactive_argv(self, t: Target) -> list[str]:
+        """Команда интерактивного сеанса (для веб-терминала): те же проверки и параметры, что у остальных операций."""
+        key = self.validate(t)
+        argv = self.ssh_command(t, key, "")[:-1]  # без удалённой команды: откроется оболочка
+        i = argv.index("BatchMode=yes")
+        return argv[: i - 1] + ["-tt", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
+                                "-o", "ForwardAgent=no", "-o", "ForwardX11=no", "-o", "PermitLocalCommand=no",
+                                "-o", "ClearAllForwardings=yes"] + argv[i - 1:]
+
     def run(self, t: Target, remote: str, stdin: bytes | None = None, timeout: float | None = None) -> Result:
         key = self.validate(t)
         res = self.runner(self.ssh_command(t, key, remote), stdin, timeout or self.cfg.command_timeout)

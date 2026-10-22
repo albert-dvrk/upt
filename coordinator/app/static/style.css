@@ -49,3 +49,7 @@ select{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:6
 a.btn{font:inherit;padding:6px 12px;border-radius:6px;border:1px solid var(--line);background:var(--card);color:var(--fg);text-decoration:none}
 a.btn:hover{border-color:var(--accent)}
 .progress.small{height:8px}
+
+.termbox{background:#0b0e14;color:#d7dae0;border-radius:6px;padding:6px;height:430px;overflow:hidden;outline:none}
+.termbox:focus-within{box-shadow:0 0 0 2px var(--accent)}
+.termbox pre{margin:0;height:100%;overflow:auto;white-space:pre-wrap;word-break:break-all;font:13px/1.35 ui-monospace,Menlo,Consolas,monospace}

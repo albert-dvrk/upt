@@ -3,7 +3,8 @@
 
 Запуск из каталога deploy/:   python3 ../loadtests/chaos.py [сценарий ...]
 Учётные данные и адрес — см. vfclient.py (по умолчанию HTTPS, admin из deploy/.env).
-Сценарии: baseline flaky_mock kill_agent coordinator_restart postgres_restart stop_resume  (по умолчанию — все)
+Сценарии: baseline flaky_mock kill_agent coordinator_restart postgres_restart stop_resume
+          rate_limit_429 disk_full corrupt_part network_drop  (по умолчанию — все)
 
 Для каждого сценария создаётся задание на своём диапазоне идентификаторов, во время работы
 вносится сбой, затем проверяется итог: задание завершилось, результат есть для каждого ID, статусы
@@ -302,6 +303,143 @@ def postgres_restart():
     return jid, lo, hi, 0, problems
 
 
+def _alerts():
+    try:
+        code, data = http("GET", f"{API}/api/alerts", timeout=5)
+        return data if code == 200 and isinstance(data, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def rate_limit_429():
+    """Целевой сервис отвечает 429: агенты обязаны снизить частоту запросов, а задание — завершиться."""
+    lo, hi = 7000, 7399
+    mock_config(chunk_delay_ms=150, delay_ms=40)
+    jid = create_job("chaos-rate-limit", lo, hi)
+    seen = {"fired": False, "alert": False, "min_scale": 1.0}
+
+    def tick(t, j):
+        if not seen["fired"] and j and j["status"] == "running" and j["stats"]["processed_ids"] >= 40:
+            http("POST", f"{MOCK}/_control/rate_limit", {"seconds": 15, "retry_after_seconds": 2})
+            seen["fired"] = True
+        if seen["fired"]:
+            if any(a.get("code") == "rate_limited" for a in _alerts()):
+                seen["alert"] = True
+            for w in http("GET", f"{API}/api/workers")[1] or []:
+                scale = ((w.get("resources") or {}).get("runtime") or {}).get("throttle_scale")
+                if isinstance(scale, (int, float)):
+                    seen["min_scale"] = min(seen["min_scale"], scale)
+
+    j = wait_job(jid, 300, tick)
+    problems = [] if j["status"] == "completed" else [f"статус {j['status']}"]
+    if not seen["fired"]:
+        problems.append("ограничение 429 не было включено: задание завершилось слишком быстро")
+    elif not seen["alert"] and seen["min_scale"] >= 1.0:
+        problems.append("ответы 429 не вызвали ни предупреждения, ни снижения нагрузки агентами")
+    return jid, lo, hi, 2, problems
+
+
+def disk_full():
+    """На сервере не хватает места: он перестаёт получать блоки, остальные серверы доделывают задание."""
+    lo, hi = 8000, 8399
+    mock_config(chunk_delay_ms=120, delay_ms=30)
+    ids = worker_ids()
+    w3 = ids["worker-03"]
+    http("PATCH", f"{API}/api/workers/{w3}", {"min_free_space_gb": 10_000_000})  # «свободно меньше резерва»
+    seen = {"alert": False}
+    try:
+        jid = create_job("chaos-disk-full", lo, hi)
+
+        def tick(t, j):
+            if any(a.get("code") == "disk_low" and a.get("worker_id") == w3 for a in _alerts()):
+                seen["alert"] = True
+
+        j = wait_job(jid, 300, tick)
+        problems = [] if j["status"] == "completed" else [f"статус {j['status']}"]
+        if not seen["alert"]:
+            problems.append("нет предупреждения disk_low для worker-03")
+        by_w3 = [i for i in all_items(jid) if i.get("worker_id") == w3]
+        if by_w3:
+            problems.append(f"worker-03 получил блоки при нехватке места: обработал {len(by_w3)} ID")
+    finally:
+        http("PATCH", f"{API}/api/workers/{w3}", {"min_free_space_gb": 0})
+    return jid, lo, hi, 0, problems
+
+
+def corrupt_part():
+    """Перед заданием на серверах лежат повреждённые .part: итоговые файлы обязаны быть корректными."""
+    lo, hi = 9000, 9399
+    found = []
+    for vid in range(lo, hi + 1):
+        if http("GET", f"{MOCK}/{vid}")[0] == 200:
+            found.append(vid)
+        if len(found) == 4:
+            break
+    for vid in found:
+        for w in WORKERS:  # какой бы сервер ни взял ID, на нём уже лежит мусор вместо начала файла
+            dc("exec", "-T", "-u", "downloader", w, "sh", "-c",
+               f"mkdir -p /data/videos/0/{vid} && head -c 40000 /dev/urandom > /data/videos/0/{vid}/video.mp4.part", check=False)
+    mock_config(chunk_delay_ms=60, delay_ms=20)
+    jid = create_job("chaos-corrupt-part", lo, hi)
+    j = wait_job(jid, 300)
+    problems = [] if j["status"] == "completed" else [f"статус {j['status']}"]
+    if not found:
+        problems.append("в диапазоне нет найденных материалов — сценарий ничего не проверяет")
+    return jid, lo, hi, 0, problems
+
+
+def network_drop():
+    """Обрыв сети у сервера: аренда истекает, блок уходит другому, после возврата сети сервер снова в работе."""
+    lo, hi = 10000, 10599
+    mock_config(chunk_delay_ms=250, delay_ms=30)
+    jid = create_job("chaos-network-drop", lo, hi)
+    ids = worker_ids()
+    cid = dc("ps", "-q", "worker-03").stdout.strip()
+    nets = subprocess.run(["docker", "inspect", "-f", "{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}", cid],
+                          capture_output=True, text=True, check=True).stdout.split()
+    state = {"cut": False, "offline_seen": False, "back": False}
+    problems = []
+
+    def tick(t, j):
+        if not state["cut"] and t > 3:
+            chunks = http("GET", f"{API}/api/jobs/{jid}/chunks?limit=200")[1] or []
+            if any(c["status"] == "leased" and c["leased_by"] == ids["worker-03"] for c in chunks):
+                for n in nets:
+                    subprocess.run(["docker", "network", "disconnect", n, cid], capture_output=True)
+                state["cut"] = True
+        if state["cut"] and not state["offline_seen"]:
+            st = {w["name"]: w["status"] for w in http("GET", f"{API}/api/workers")[1]}
+            if st.get("worker-03") == "offline":
+                state["offline_seen"] = True
+                for n in nets:  # возвращаем сеть вместе с DNS-именем сервиса
+                    subprocess.run(["docker", "network", "connect", "--alias", "worker-03", n, cid], capture_output=True)
+                state["back"] = True
+
+    try:
+        j = wait_job(jid, 300, tick)
+    finally:
+        if state["cut"] and not state["back"]:
+            for n in nets:
+                subprocess.run(["docker", "network", "connect", "--alias", "worker-03", n, cid], capture_output=True)
+    if not state["cut"]:
+        problems.append("сеть не была отключена: worker-03 ни разу не держал блок")
+    if j["status"] != "completed":
+        problems.append(f"статус {j['status']}")
+    if state["cut"] and not state["offline_seen"]:
+        problems.append("координатор не пометил worker-03 как offline")
+    chunks = http("GET", f"{API}/api/jobs/{jid}/chunks?limit=200")[1] or []
+    if state["cut"] and not any(c["attempt"] > 1 for c in chunks):
+        problems.append("ни один блок не был выдан повторно")
+    end = time.time() + 40  # агент должен вернуться в строй после восстановления сети
+    while time.time() < end:
+        if {w["name"]: w["status"] for w in http("GET", f"{API}/api/workers")[1]}.get("worker-03") == "online":
+            break
+        time.sleep(1)
+    else:
+        problems.append("worker-03 не вернулся в online после восстановления сети")
+    return jid, lo, hi, 0, problems
+
+
 def stop_resume():
     lo, hi = 6000, 6999
     mock_config(chunk_delay_ms=250, delay_ms=30)  # задание должно идти достаточно долго, чтобы успеть поставить на паузу
@@ -327,7 +465,8 @@ def stop_resume():
     return jid, lo, hi, 0, problems
 
 
-SCENARIOS = {f.__name__: f for f in (baseline, flaky_mock, kill_agent, coordinator_restart, postgres_restart, stop_resume)}
+SCENARIOS = {f.__name__: f for f in (baseline, flaky_mock, kill_agent, coordinator_restart, postgres_restart, stop_resume,
+                                       rate_limit_429, disk_full, corrupt_part, network_drop)}
 
 
 def main(argv):
