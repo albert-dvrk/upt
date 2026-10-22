@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>videofetch — панель управления</title>
+<link rel="stylesheet" href="style.css">
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script defer src="app.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/3.14.1/cdn.min.js"></script>
+</head>
+<body x-data="app()" x-init="init()">
+
+<header>
+  <h1>videofetch</h1>
+  <nav>
+    <button :class="{on: tab==='jobs'}" @click="tab='jobs'">Задания</button>
+    <button :class="{on: tab==='workers'}" @click="tab='workers'">Серверы</button>
+  </nav>
+  <span class="conn" :class="online ? 'ok' : 'bad'" x-text="online ? 'координатор на связи' : 'нет связи с координатором'"></span>
+</header>
+
+<div class="toast" x-show="toast" x-text="toast" x-transition></div>
+
+<!-- ================= ЗАДАНИЯ ================= -->
+<main x-show="tab==='jobs'">
+  <section class="card">
+    <h2>Новое задание</h2>
+    <form class="row" @submit.prevent="createJob()">
+      <label>Название <input required maxlength="128" x-model="form.name"></label>
+      <label>Диапазон ID <input x-model="form.range" placeholder="[0,299] или [0,]" title="[A,B] — конечный, [A,] — открытый"></label>
+      <label>Размер блока <input type="number" min="1" x-model.number="form.chunk_size"></label>
+      <label>Потоков (глобально) <input type="number" min="1" x-model.number="form.threads" placeholder="по серверу"></label>
+      <label>Лимит запросов/с <input type="number" min="0.1" step="0.1" x-model.number="form.rps" placeholder="без лимита"></label>
+      <fieldset><legend>Серверы</legend>
+        <template x-for="w in workers" :key="w.id">
+          <label class="chk"><input type="checkbox" :value="w.id" x-model="form.workers"> <span x-text="w.name"></span></label>
+        </template>
+        <span class="muted" x-show="!workers.length">сначала добавьте серверы</span>
+      </fieldset>
+      <button class="primary">Создать</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Задания</h2>
+    <table>
+      <thead><tr><th>#</th><th>Название</th><th>Статус</th><th>Диапазон</th><th>Создано</th><th></th></tr></thead>
+      <tbody>
+        <template x-for="j in jobs" :key="j.id">
+          <tr :class="{sel: job && job.id===j.id}" @click="openJob(j.id)">
+            <td x-text="j.id"></td>
+            <td x-text="j.name"></td>
+            <td><span class="badge" :class="j.status" x-text="statusRu(j.status)"></span></td>
+            <td x-text="rangeText(j)"></td>
+            <td x-text="fmtTime(j.created_at)"></td>
+            <td><button class="link" @click.stop="openJob(j.id)">открыть</button></td>
+          </tr>
+        </template>
+        <tr x-show="!jobs.length"><td colspan="6" class="muted">заданий пока нет</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <template x-if="job">
+  <section class="card">
+    <div class="titlebar">
+      <h2>Задание #<span x-text="job.id"></span> — <span x-text="job.name"></span>
+        <span class="badge" :class="job.status" x-text="statusRu(job.status)"></span></h2>
+      <div class="actions">
+        <button @click="jobAction('start')" :disabled="job.status!=='created'">Запустить</button>
+        <button @click="jobAction('pause')" :disabled="job.status!=='running'">Пауза</button>
+        <button @click="jobAction('resume')" :disabled="job.status!=='paused'">Продолжить</button>
+        <button class="danger" @click="confirmStop()" :disabled="!['running','paused','pausing','created'].includes(job.status)">Остановить</button>
+      </div>
+    </div>
+
+    <div class="progress"><div class="bar" :style="`width:${pct()}%`"></div></div>
+    <p class="muted">
+      <b x-text="pct().toFixed(1)+'%'"></b> ·
+      обработано <span x-text="job.stats.processed_ids"></span> из <span x-text="job.stats.total_ids ?? '∞'"></span> ID ·
+      диапазон <span x-text="job.stats.effective_range"></span>
+    </p>
+
+    <div class="grid">
+      <div>
+        <h3>Результаты</h3>
+        <div class="chips">
+          <template x-for="(n, s) in job.stats.items" :key="s">
+            <button class="chip" :class="{on: itemFilter===s}" @click="setFilter(s)"><span x-text="itemRu(s)"></span> <b x-text="n"></b></button>
+          </template>
+          <button class="chip" :class="{on: itemFilter===''}" @click="setFilter('')">все</button>
+        </div>
+        <h3>Блоки</h3>
+        <div class="chips">
+          <template x-for="(n, s) in job.stats.chunks" :key="s"><span class="chip static"><span x-text="s"></span> <b x-text="n"></b></span></template>
+        </div>
+      </div>
+      <div>
+        <h3>Параметры «на лету»</h3>
+        <form class="row" @submit.prevent="patchJob()">
+          <label>Потоков <input type="number" min="1" x-model.number="edit.threads"></label>
+          <label>Лимит запросов/с <input type="number" min="0.1" step="0.1" x-model.number="edit.rps" placeholder="нет"></label>
+          <button>Применить</button>
+        </form>
+        <table class="small">
+          <thead><tr><th>Сервер</th><th>Статус</th><th>Потоки</th><th>Лимит/с</th><th></th></tr></thead>
+          <tbody>
+            <template x-for="w in job.workers" :key="w.worker_id">
+              <tr>
+                <td x-text="w.name"></td>
+                <td><span class="badge" :class="w.worker_status" x-text="statusRu(w.worker_status)"></span></td>
+                <td><input class="tiny" type="number" min="1" :value="w.threads" @change="setWorkerThreads(w, $event.target.value)"></td>
+                <td x-text="w.rate_limit_rps ? w.rate_limit_rps.toFixed(1) : '—'"></td>
+                <td><button class="link" @click="toggleWorker(w)" x-text="w.enabled ? 'отключить' : 'включить'"></button></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div>
+        <h3>Блоки диапазона</h3>
+        <div class="scroll">
+          <table class="small">
+            <thead><tr><th>Диапазон</th><th>Статус</th><th>Сервер</th><th>Попытка</th></tr></thead>
+            <tbody><template x-for="c in chunks" :key="c.id">
+              <tr><td x-text="c.range_start+'–'+c.range_end"></td><td x-text="c.status"></td><td x-text="workerName(c.leased_by)"></td><td x-text="c.attempt"></td></tr>
+            </template></tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <h3>Элементы <span class="muted" x-text="'('+items.total+')'"></span></h3>
+        <div class="scroll">
+          <table class="small">
+            <thead><tr><th>ID</th><th>Статус</th><th>HTTP</th><th>Ошибка</th><th>Сервер</th></tr></thead>
+            <tbody><template x-for="i in items.items" :key="i.external_id">
+              <tr><td x-text="i.external_id"></td><td x-text="itemRu(i.status)"></td><td x-text="i.http_status ?? '—'"></td><td x-text="i.error_code ?? ''"></td><td x-text="workerName(i.worker_id)"></td></tr>
+            </template></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button :disabled="itemOffset===0" @click="itemOffset=Math.max(0,itemOffset-100); loadItems()">←</button>
+          <span x-text="(itemOffset+1)+'–'+Math.min(itemOffset+100, items.total)"></span>
+          <button :disabled="itemOffset+100>=items.total" @click="itemOffset+=100; loadItems()">→</button>
+        </div>
+      </div>
+    </div>
+
+    <h3>События</h3>
+    <div class="scroll tall">
+      <table class="small">
+        <thead><tr><th>Время</th><th>Уровень</th><th>Операция</th><th>Результат</th><th>Сообщение</th></tr></thead>
+        <tbody><template x-for="e in events" :key="e.id">
+          <tr :class="e.level.toLowerCase()"><td x-text="fmtTime(e.ts)"></td><td x-text="e.level"></td><td x-text="e.operation"></td><td x-text="e.result ?? ''"></td><td x-text="e.message ?? e.error_code ?? ''"></td></tr>
+        </template></tbody>
+      </table>
+    </div>
+  </section>
+  </template>
+</main>
+
+<!-- ================= СЕРВЕРЫ ================= -->
+<main x-show="tab==='workers'">
+  <section class="card">
+    <h2>Добавить сервер</h2>
+    <form class="row" @submit.prevent="createWorker()">
+      <label>Имя <input required pattern="[A-Za-z0-9][A-Za-z0-9._-]*" x-model="wform.name"></label>
+      <label>Хост <input required x-model="wform.host"></label>
+      <label>SSH-порт <input type="number" min="1" max="65535" x-model.number="wform.ssh_port"></label>
+      <label>Пользователь <input required x-model="wform.ssh_user"></label>
+      <label>Ключ (путь на координаторе) <input x-model="wform.ssh_key_ref" placeholder="/run/secrets/worker-key"></label>
+      <label>Каталог хранилища <input required x-model="wform.storage_path"></label>
+      <label>Потоков <input type="number" min="1" x-model.number="wform.threads"></label>
+      <button class="primary">Добавить</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Серверы</h2>
+    <table>
+      <thead><tr><th>Имя</th><th>Статус</th><th>Хост</th><th>Агент</th><th>Диск, своб.</th><th>Heartbeat</th><th>Управление агентом</th></tr></thead>
+      <tbody>
+        <template x-for="w in workers" :key="w.id">
+          <tr :class="{sel: metricWorker===w.id}">
+            <td><button class="link" @click="showMetrics(w.id)" x-text="w.name"></button></td>
+            <td><span class="badge" :class="w.status" x-text="statusRu(w.status)"></span></td>
+            <td x-text="w.host+':'+w.ssh_port"></td>
+            <td x-text="w.agent_version ?? '—'"></td>
+            <td x-text="w.resources && w.resources.disk_free_bytes ? fmtBytes(w.resources.disk_free_bytes) : '—'"></td>
+            <td x-text="w.last_heartbeat_at ? ago(w.last_heartbeat_at) : '—'"></td>
+            <td class="actions">
+              <button @click="agentOp(w,'check')">Проверить SSH</button>
+              <button @click="agentOp(w,'deploy')">Развернуть</button>
+              <button @click="agentOp(w,'start')">Запустить</button>
+              <button @click="agentOp(w,'stop')">Остановить</button>
+              <button class="link" @click="toggleEnabled(w)" x-text="w.enabled ? 'отключить' : 'включить'"></button>
+            </td>
+          </tr>
+        </template>
+        <tr x-show="!workers.length"><td colspan="7" class="muted">серверов пока нет</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card" x-show="metricWorker">
+    <h2>Метрики: <span x-text="workerName(metricWorker)"></span></h2>
+    <div class="charts">
+      <div><h3>ID в секунду</h3><canvas id="chIds"></canvas></div>
+      <div><h3>Скорость загрузки, МБ/с</h3><canvas id="chBps"></canvas></div>
+      <div><h3>CPU, %</h3><canvas id="chCpu"></canvas></div>
+      <div><h3>Активные запросы</h3><canvas id="chAct"></canvas></div>
+    </div>
+  </section>
+</main>
+</body>
+</html>

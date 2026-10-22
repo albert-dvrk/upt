@@ -174,3 +174,12 @@ def test_patch_worker_disable(client):
     assert client.get(f"/api/jobs/{jid}/chunks").json()[0]["status"] == "pending"
     r = client.post(f"/api/workers/{wid}/lease")
     assert r.status_code == 409 and r.json()["error"] == "worker_disabled"
+
+
+def test_ui_is_served(client):
+    page = client.get("/ui/")
+    assert page.status_code == 200 and "videofetch" in page.text and "x-data" in page.text
+    assert client.get("/ui/app.js").status_code == 200
+    assert client.get("/ui/style.css").status_code == 200
+    root = client.get("/", follow_redirects=False)
+    assert root.status_code in (302, 307) and root.headers["location"] == "/ui/"

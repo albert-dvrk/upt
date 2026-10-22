@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
@@ -57,6 +60,14 @@ def create_app(
     )
     application.include_router(jobs_api.router)
     application.include_router(workers_api.router)
+
+    static_dir = Path(__file__).parent / "static"
+    if static_dir.is_dir():
+        application.mount("/ui", StaticFiles(directory=static_dir, html=True), name="ui")
+
+        @application.get("/", include_in_schema=False)
+        def root() -> RedirectResponse:
+            return RedirectResponse("/ui/")
 
     @application.exception_handler(ServiceError)
     async def service_error_handler(_: Request, exc: ServiceError) -> JSONResponse:
