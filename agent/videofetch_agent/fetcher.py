@@ -76,7 +76,8 @@ class Stop(Exception):
 
 
 class Fetcher:
-    def __init__(self, gate: RateGate, stop: threading.Event, *, sleep=None, counters=None) -> None:
+    def __init__(self, gate: RateGate, stop: threading.Event, *, sleep=None, counters=None, job_id: int | None = None) -> None:
+        self.job_id = job_id
         self.gate = gate
         self.stop = stop
         self._sleep = sleep or (lambda s: stop.wait(s))
@@ -85,8 +86,14 @@ class Fetcher:
     # ------------------------------------------------------------ вспомогательное
 
     def _note_status(self, code: int) -> None:
+        self.gate.report(code)  # адаптивное снижение нагрузки при 429/5xx
         if self.counters:
             self.counters.add_status(code)
+
+    def _dl(self, name: str, *args) -> None:
+        fn = getattr(self.counters, name, None)
+        if fn:
+            fn(*args)
 
     def _pause(self, seconds: float) -> None:
         if self._sleep(seconds) or self.stop.is_set():
@@ -110,6 +117,7 @@ class Fetcher:
                 resp = self._get(url, s)
             except NetworkError:
                 resp = None
+                self.gate.report(None)
             if resp is not None:
                 self._note_status(resp.status)
                 code = resp.status
@@ -153,7 +161,10 @@ class Fetcher:
         В любом исходе возвращает метаданные материала; при успехе — ещё и описание файла, а рядом
         с видео записывается metadata.json.
         """
-        out = self._download(vid, meta, s)
+        try:
+            out = self._download(vid, meta, s)
+        finally:
+            self._dl("dl_end", vid)
         out.media = media_from(vid, meta, s)
         return out
 
@@ -196,6 +207,7 @@ class Fetcher:
                 stream = open_stream(url, headers=headers, timeout=s.request_timeout)
             except NetworkError:
                 stream = None
+                self.gate.report(None)
             if stream is not None:
                 with stream:
                     self._note_status(stream.status)
@@ -204,7 +216,8 @@ class Fetcher:
                         if have and code == 200:  # сервер проигнорировал Range — начинаем заново
                             have = 0
                         try:
-                            self._write(part, stream, append=bool(have) and code == 206)
+                            self._dl("dl_start", vid, size, have, self.job_id)
+                            self._write(part, stream, append=bool(have) and code == 206, vid=vid)
                             if size is None or os.path.getsize(part) == size:
                                 break
                         except NetworkError:
@@ -271,7 +284,7 @@ class Fetcher:
         """Ссылка на файл обязана вести на тот же хост, что и шаблон задания."""
         return urlparse(url).hostname == urlparse(s.url_template).hostname
 
-    def _write(self, path: str, stream, append: bool) -> None:
+    def _write(self, path: str, stream, append: bool, vid: int | None = None) -> None:
         with open(path, "ab" if append else "wb") as fh:
             for data in stream.chunks():
                 if self.stop.is_set():
@@ -279,6 +292,8 @@ class Fetcher:
                 fh.write(data)
                 if self.counters:
                     self.counters.add_bytes(len(data))
+                    if vid is not None:
+                        self._dl("dl_add", vid, len(data))
             fh.flush()
 
     @staticmethod

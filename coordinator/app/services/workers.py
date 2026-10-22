@@ -133,9 +133,13 @@ def heartbeat(
     if resources is not None:
         worker.resources = resources
     if metrics is not None:
-        values = metrics.model_dump(exclude_none=True)
+        values = metrics.model_dump(exclude_none=True, exclude={"runtime"})
         if values:
             session.add(WorkerMetric(worker_id=worker.id, **values))
+        if metrics.runtime is not None:  # состояние «здесь и сейчас»: хранится в ресурсах сервера, а не в истории метрик
+            merged = dict(worker.resources or {})
+            merged["runtime"] = metrics.runtime
+            worker.resources = merged
 
     jobs.bulk_update(
         session,

@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     # блоки и аренда
     default_chunk_size: int = 1000
     lease_seconds: int = 60
-    heartbeat_interval_seconds: int = 10
+    heartbeat_interval_seconds: int = 5
     heartbeat_timeout_seconds: int = 30
     reaper_interval_seconds: int = 5
     max_chunk_attempts: int = 5

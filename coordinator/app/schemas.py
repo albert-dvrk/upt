@@ -110,6 +110,7 @@ class MetricsIn(BaseModel):
     ids_per_sec: float | None = None
     download_bps: float | None = None
     http_status_counts: dict[str, int] | None = None
+    runtime: dict[str, Any] | None = None  # активные загрузки и масштаб адаптивного ограничения; в таблицу метрик не пишется
 
 
 class MetricOut(ORMModel):
@@ -336,6 +337,7 @@ class JobCreate(BaseModel):
     url_template: str | None = Field(None, max_length=512)
     max_ids: int | None = Field(None, ge=1)
     max_runtime_seconds: int | None = Field(None, ge=1)
+    stop_on_consecutive_missing: int | None = Field(None, ge=1)  # завершить, когда подряд столько ID отсутствует
     workers: list[JobWorkerIn] = Field(default_factory=list, max_length=1000)
 
 
@@ -360,6 +362,7 @@ class JobOut(ORMModel):
     global_rate_limit_rps: float | None
     max_ids: int | None
     max_runtime_seconds: int | None
+    stop_on_consecutive_missing: int | None
     config: dict[str, Any] | None
     created_at: dt.datetime
     started_at: dt.datetime | None

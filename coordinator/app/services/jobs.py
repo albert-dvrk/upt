@@ -19,6 +19,7 @@ from app.statuses import (
     TERMINAL_JOB_STATUSES,
     ChunkStatus,
     InvalidTransition,
+    ItemStatus,
     JobStatus,
     WorkerStatus,
     ensure_transition,
@@ -120,6 +121,7 @@ def create_job(
         global_rate_limit_rps=data.global_rate_limit_rps,
         max_ids=data.max_ids,
         max_runtime_seconds=data.max_runtime_seconds,
+        stop_on_consecutive_missing=data.stop_on_consecutive_missing,
         config=config,
         created_by=created_by,
     )
@@ -304,6 +306,33 @@ def _is_exhausted(session: Session, job: Job) -> bool:
     return next_chunk(effective_range(job), job.chunk_size, last_end) is None
 
 
+def _consecutive_missing_reached(session: Session, job: Job) -> bool:
+    """Условие остановки: от последнего найденного ID до границы сплошной обработки подряд нет материалов.
+
+    Граница — конец последнего блока в цепочке полностью завершённых блоков с начала диапазона. «Найденным»
+    считается любой результат, кроме not_found (в том числе ошибки: про них неизвестно, есть ли материал).
+    """
+    n = job.stop_on_consecutive_missing
+    if not n:
+        return False
+    first_open = session.scalar(
+        select(func.min(RangeChunk.range_start)).where(
+            RangeChunk.job_id == job.id, RangeChunk.status != ChunkStatus.COMPLETED.value
+        )
+    )
+    last_end = session.scalar(select(func.max(RangeChunk.range_end)).where(RangeChunk.job_id == job.id))
+    if last_end is None:
+        return False
+    frontier = first_open - 1 if first_open is not None else last_end
+    base = job.range_from - 1
+    present = session.scalar(
+        select(func.max(Item.external_id)).where(
+            Item.job_id == job.id, Item.status != ItemStatus.NOT_FOUND.value, Item.external_id <= frontier
+        )
+    )
+    return frontier - max(present if present is not None else base, base) >= n
+
+
 def settle_job(session: Session, job: Job, *, now: dt.datetime | None = None) -> None:
     """Завершает промежуточные состояния: pausing -> paused, running -> completed."""
     status = JobStatus(job.status)
@@ -311,6 +340,12 @@ def settle_job(session: Session, job: Job, *, now: dt.datetime | None = None) ->
         if not _count_chunks(session, job.id, ChunkStatus.LEASED.value):
             transition(session, job, JobStatus.PAUSED, now=now)
     elif status == JobStatus.RUNNING:
+        if _consecutive_missing_reached(session, job):
+            release_leases(session, job_id=job.id)  # агенты получат lease_lost и бросят блок
+            log_event(session, "job_stop_condition", job_id=job.id, result="consecutive_missing",
+                      message=f"подряд отсутствует не менее {job.stop_on_consecutive_missing} ID")
+            transition(session, job, JobStatus.COMPLETED, now=now)
+            return
         if _is_exhausted(session, job):
             failed = _count_chunks(session, job.id, ChunkStatus.FAILED.value)
             if failed:
@@ -458,3 +493,48 @@ def list_files(session: Session, job_id: int, *, limit: int, offset: int) -> tup
         }
         for f, item, d, media in rows
     ]
+
+
+RETRYABLE_ITEM_STATUSES = (ItemStatus.FAILED.value, ItemStatus.RATE_LIMITED.value, ItemStatus.RETRY_WAIT.value)
+RETRY_FROM_STATUSES = (JobStatus.COMPLETED.value, JobStatus.STOPPED.value, JobStatus.FAILED.value, JobStatus.PAUSED.value)
+
+
+def retry_failed(session: Session, job_id: int, *, created_by: int | None = None, start: bool = True) -> Job:
+    """Новая попытка для ошибочных элементов: создаёт задание на диапазон от первого до последнего ошибочного ID.
+
+    Завершённые задания не возобновляются (конечные состояния), поэтому повтор — это новое задание с теми же
+    настройками и серверами (attempt + 1). Уже скачанные в этом диапазоне файлы агент распознаёт и не качает заново.
+    """
+    job = get_job(session, job_id)
+    if job.status not in RETRY_FROM_STATUSES:
+        raise Conflict("Повторить можно завершённое, остановленное или приостановленное задание", "job_not_finished")
+    lo, hi, count = session.execute(
+        select(func.min(Item.external_id), func.max(Item.external_id), func.count()).where(
+            Item.job_id == job.id, Item.status.in_(RETRYABLE_ITEM_STATUSES)
+        )
+    ).one()
+    if not count:
+        raise Conflict("В задании нет ошибочных элементов", "nothing_to_retry")
+    config = dict(job.config or {})
+    config["retry_of"] = job.id
+    new = Job(
+        name=f"{job.name} (повтор {job.attempt + 1})"[:128],
+        status=JobStatus.CREATED.value,
+        attempt=job.attempt + 1,
+        range_from=lo,
+        range_to=hi,
+        chunk_size=job.chunk_size,
+        request_timeout_seconds=job.request_timeout_seconds,
+        max_retries=job.max_retries,
+        global_rate_limit_rps=job.global_rate_limit_rps,
+        config=config,
+        created_by=created_by,
+    )
+    session.add(new)
+    session.flush()
+    for jw in session.scalars(select(JobWorker).where(JobWorker.job_id == job.id, JobWorker.enabled.is_(True))):
+        set_job_worker(session, new, jw.worker_id, {"threads": jw.threads, "rate_limit_rps": jw.rate_limit_rps, "enabled": True})
+    log_event(session, "job_retry", job_id=new.id, result="created", message=f"retry_of={job.id}; failed_items={count}; range={lo}-{hi}")
+    if start:
+        start_job(session, new.id)
+    return new

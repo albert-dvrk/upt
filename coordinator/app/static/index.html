@@ -36,6 +36,19 @@
   </section>
 </main>
 
+<div class="alerts" x-show="me && alerts.length" x-cloak>
+  <div class="alert-head" @click="alertsOpen = !alertsOpen">
+    <b x-text="'Предупреждения: ' + alerts.length"></b>
+    <span class="muted" x-text="alerts.filter(a => a.severity==='critical').length ? 'есть критические' : 'требуют внимания'"></span>
+    <span class="muted" x-text="alertsOpen ? '▲' : '▼'"></span>
+  </div>
+  <ul x-show="alertsOpen || alerts.some(a => a.severity==='critical')">
+    <template x-for="(a, i) in alerts" :key="i">
+      <li :class="alertClass(a)" x-text="a.message"></li>
+    </template>
+  </ul>
+</div>
+
 <div class="toast" x-show="toast" x-text="toast" x-transition></div>
 
 <!-- ================= ЗАДАНИЯ ================= -->
@@ -48,6 +61,7 @@
       <label>Размер блока <input type="number" min="1" x-model.number="form.chunk_size"></label>
       <label>Потоков (глобально) <input type="number" min="1" x-model.number="form.threads" placeholder="по серверу"></label>
       <label>Лимит запросов/с <input type="number" min="0.1" step="0.1" x-model.number="form.rps" placeholder="без лимита"></label>
+      <label>Стоп после N подряд отсутствующих <input type="number" min="1" x-model.number="form.miss" placeholder="выкл." title="для открытого диапазона: задание завершится, когда подряд N идентификаторов отсутствуют"></label>
       <fieldset><legend>Серверы</legend>
         <template x-for="w in workers" :key="w.id">
           <label class="chk"><input type="checkbox" :value="w.id" x-model="form.workers"> <span x-text="w.name"></span></label>
@@ -56,6 +70,20 @@
       </fieldset>
       <button class="primary">Создать</button>
     </form>
+  </section>
+
+  <section class="card">
+    <h2>Активные загрузки <span class="muted" x-text="'('+downloads.length+')'"></span></h2>
+    <table class="small" x-show="downloads.length">
+      <thead><tr><th>Сервер</th><th>Задание</th><th>ID</th><th>Прогресс</th><th>Скачано</th><th>Скорость</th></tr></thead>
+      <tbody><template x-for="d in downloads" :key="d.worker_id+'-'+d.external_id">
+        <tr><td x-text="d.worker"></td><td x-text="'#'+(d.job_id ?? '—')"></td><td x-text="d.external_id"></td>
+          <td style="min-width:160px"><div class="progress small"><div class="bar" :style="`width:${pctOf(d)}%`"></div></div></td>
+          <td x-text="fmtBytes(d.bytes)+(d.total ? ' / '+fmtBytes(d.total)+' ('+pctOf(d).toFixed(0)+'%)' : '')"></td>
+          <td x-text="fmtSpeed(d.bps)"></td></tr>
+      </template></tbody>
+    </table>
+    <p class="muted" x-show="!downloads.length">сейчас ничего не скачивается</p>
   </section>
 
   <section class="card">
@@ -83,6 +111,11 @@
     <div class="titlebar">
       <h2>Задание #<span x-text="job.id"></span> — <span x-text="job.name"></span>
         <span class="badge" :class="job.status" x-text="statusRu(job.status)"></span></h2>
+      <div class="actions">
+        <a class="btn" :href="`/api/jobs/${job.id}/export?format=csv`" download>Экспорт CSV</a>
+        <a class="btn" :href="`/api/jobs/${job.id}/export?format=json`" download>Экспорт JSON</a>
+        <button x-show="can('operator') && canRetry()" @click="retryFailed()" x-text="'Повторить ошибочные ('+failedCount()+')'"></button>
+      </div>
       <div class="actions" x-show="can('operator')">
         <button @click="jobAction('start')" :disabled="job.status!=='created'">Запустить</button>
         <button @click="jobAction('pause')" :disabled="job.status!=='running'">Пауза</button>
@@ -263,7 +296,8 @@
         <template x-for="w in workers" :key="w.id">
           <tr :class="{sel: metricWorker===w.id}">
             <td><button class="link" @click="showMetrics(w.id)" x-text="w.name"></button></td>
-            <td><span class="badge" :class="w.status" x-text="statusRu(w.status)"></span></td>
+            <td><span class="badge" :class="w.status" x-text="statusRu(w.status)"></span>
+              <span class="badge degraded" x-show="throttle(w)" :title="'нагрузка снижена из-за 429/5xx'" x-text="'замедлен '+throttle(w)"></span></td>
             <td x-text="w.host+':'+w.ssh_port"></td>
             <td x-text="w.agent_version ?? '—'"></td>
             <td x-text="w.resources && w.resources.disk_free_bytes ? fmtBytes(w.resources.disk_free_bytes) : '—'"></td>

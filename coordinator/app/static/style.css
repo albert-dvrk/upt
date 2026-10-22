@@ -40,3 +40,12 @@ button.link{border:0;background:none;color:var(--accent);padding:2px 4px}
 .who{font-size:13px;color:var(--muted)}.who b{color:var(--fg)}
 .login{max-width:380px;margin:60px auto}.login form{display:grid;gap:12px}.err{color:var(--bad);margin:0}
 select{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+
+.alerts{max-width:1300px;margin:12px auto 0;padding:0 24px}
+.alerts .alert-head{display:flex;gap:12px;align-items:center;cursor:pointer;padding:8px 14px;background:var(--card);border:1px solid var(--line);border-radius:8px}
+.alerts ul{list-style:none;margin:6px 0 0;padding:0;display:grid;gap:4px}
+.alerts li{padding:6px 12px;border-radius:6px;border:1px solid var(--line);background:var(--card);border-left:4px solid var(--muted)}
+.alerts li.critical{border-left-color:var(--bad)}.alerts li.warning{border-left-color:var(--warn)}.alerts li.info{border-left-color:var(--accent)}
+a.btn{font:inherit;padding:6px 12px;border-radius:6px;border:1px solid var(--line);background:var(--card);color:var(--fg);text-decoration:none}
+a.btn:hover{border-color:var(--accent)}
+.progress.small{height:8px}

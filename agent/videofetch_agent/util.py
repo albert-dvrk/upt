@@ -79,13 +79,46 @@ def parse_retry_after(value: str | None, default: float = 5.0, cap: float = 120.
 class RateGate:
     """Общий для потоков ограничитель: лимит запросов в секунду + пауза после 429."""
 
+    # Адаптивное снижение нагрузки (AIMD): при росте 429/5xx/сетевых ошибок масштаб нагрузки делится пополам,
+    # при спокойной работе растёт на 0,1. Масштаб применяется и к лимиту запросов, и к числу активных потоков.
+    WINDOW = 20           # ответов в окне оценки
+    BAD_RATIO = 0.2       # доля «плохих» ответов, после которой нагрузка снижается
+    MIN_SCALE = 0.1
+
     def __init__(self, rate: float | None = None, clock=time.monotonic, sleep=time.sleep) -> None:
         self._lock = threading.Lock()
+        self._scale = 1.0
+        self._win_total = self._win_bad = 0
+        self._last_cut = -1e9
         self._rate = rate
         self._next_slot = 0.0
         self._blocked_until = 0.0
         self._clock = clock
         self._sleep = sleep
+
+    @property
+    def scale(self) -> float:
+        return self._scale
+
+    def report(self, code: int | None) -> None:
+        """Учитывает ответ: code=None — сетевая ошибка. 429 снижает нагрузку сразу, прочие сбои — по доле в окне."""
+        bad = code is None or code == 429 or code >= 500
+        with self._lock:
+            now = self._clock()
+            if code == 429 and now - self._last_cut >= 2.0:
+                self._scale = max(self.MIN_SCALE, self._scale / 2)
+                self._last_cut = now
+                self._win_total = self._win_bad = 0
+                return
+            self._win_total += 1
+            self._win_bad += bad
+            if self._win_total >= self.WINDOW:
+                if self._win_bad / self._win_total >= self.BAD_RATIO:
+                    self._scale = max(self.MIN_SCALE, self._scale / 2)
+                    self._last_cut = now
+                elif self._win_bad == 0 and self._scale < 1.0:
+                    self._scale = min(1.0, self._scale + 0.1)
+                self._win_total = self._win_bad = 0
 
     def set_rate(self, rate: float | None) -> None:
         with self._lock:
@@ -103,7 +136,7 @@ class RateGate:
             start = max(now, self._blocked_until)
             if self._rate:
                 start = max(start, self._next_slot)
-                self._next_slot = start + 1.0 / self._rate
+                self._next_slot = start + 1.0 / (self._rate * self._scale)
             delay = start - now
         if delay > 0:
             self._sleep(delay)

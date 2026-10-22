@@ -40,10 +40,11 @@ function app() {
     tab: "jobs", online: true, toast: "", toastTimer: null,
     jobs: [], workers: [], job: null, chunks: [], items: { total: 0, items: [] }, files: { total: 0, files: [] }, events: [],
     itemFilter: "", itemOffset: 0, edit: { threads: "", rps: "" }, editJobId: null,
-    form: { name: "", range: "[0,299]", chunk_size: 50, threads: "", rps: "", workers: [] },
+    form: { name: "", range: "[0,299]", chunk_size: 50, threads: "", rps: "", miss: "", workers: [] },
     wform: { name: "", host: "", ssh_port: 22, ssh_user: "downloader", ssh_key_ref: "/run/secrets/worker-key", storage_path: "/data/videos", threads: 4 },
     metricWorker: null, tick: 0, lastErr: "",
     me: null, authChecked: false, login: { username: "", password: "", error: "", busy: false },
+    alerts: [], downloads: [], alertsOpen: false,
     users: [], audit: [], auditAction: "", uform: { username: "", password: "", role: "viewer" }, pollStarted: false,
 
     async init() {
@@ -132,6 +133,9 @@ function app() {
         this.jobs = jobs; this.workers = workers; this.online = true;
       } catch (_) { if (this.me) this.online = false; return; }  // «нет связи» — только если не отвечают основные запросы
       // ошибки остального показываем сообщением, а не ложной потерей связи
+      await this.guardQuiet(async () => {
+        [this.alerts, this.downloads] = await Promise.all([api("GET", "/api/alerts"), api("GET", "/api/downloads")]);
+      }, "предупреждения");
       if (this.job) await this.guardQuiet(() => this.refreshJob(), "задание");
       if (this.tab === "workers" && this.metricWorker && this.tick % 2 === 0) await this.guardQuiet(() => this.loadMetrics(), "метрики");
     },
@@ -173,6 +177,7 @@ function app() {
         if (f.chunk_size) body.chunk_size = f.chunk_size;
         if (f.threads) body.threads = f.threads;
         if (f.rps) body.global_rate_limit_rps = f.rps;
+        if (f.miss) body.stop_on_consecutive_missing = f.miss;
         const job = await api("POST", "/api/jobs", body);
         this.say(`Задание #${job.id} создано`);
         await this.refresh();
@@ -182,6 +187,26 @@ function app() {
     async jobAction(action) {
       await this.guard(async () => { await api("POST", `/api/jobs/${this.job.id}/${action}`); await this.refresh(); });
     },
+    failedCount() {
+      const i = (this.job && this.job.stats.items) || {};
+      return (i.failed || 0) + (i.rate_limited || 0) + (i.retry_wait || 0);
+    },
+    canRetry() {
+      return !!this.job && ["completed", "stopped", "failed", "paused"].includes(this.job.status) && this.failedCount() > 0;
+    },
+    async retryFailed() {
+      if (!confirm(`Создать новое задание для ${this.failedCount()} ошибочных элементов? Диапазон: от первого до последнего ошибочного ID.`)) return;
+      await this.guard(async () => {
+        const j = await api("POST", `/api/jobs/${this.job.id}/retry-failed`);
+        this.say(`Создано задание #${j.id} (попытка ${j.attempt}), оно уже запущено`);
+        await this.refresh();
+        await this.openJob(j.id);
+      });
+    },
+    alertClass(a) { return a.severity; },
+    pctOf(d) { return d.percent == null ? 0 : d.percent; },
+    fmtSpeed(bps) { return bps ? this.fmtBytes(bps) + "/с" : "—"; },
+    throttle(w) { const s = w.resources && w.resources.runtime && w.resources.runtime.throttle_scale; return s != null && s < 1 ? "×" + s : ""; },
     confirmStop() {
       if (confirm("Остановить задание? Запустить его заново будет нельзя.")) this.jobAction("stop");
     },

@@ -25,6 +25,7 @@ class Counters:
         self.ids = 0
         self.active_checks = 0
         self.active_downloads = 0
+        self.downloads: dict[int, dict] = {}
 
     def add_status(self, code: int) -> None:
         with self._lock:
@@ -33,6 +34,30 @@ class Counters:
     def add_bytes(self, n: int) -> None:
         with self._lock:
             self.bytes += n
+
+    # ---- прогресс активных загрузок (для списка «Активные загрузки» в интерфейсе)
+
+    def dl_start(self, vid: int, total: int | None, have: int, job_id: int | None = None) -> None:
+        with self._lock:
+            self.downloads[vid] = {"external_id": vid, "job_id": job_id, "total": total, "bytes": have, "_from": have,
+                                   "_t0": time.monotonic()}
+
+    def dl_add(self, vid: int, n: int) -> None:
+        with self._lock:
+            d = self.downloads.get(vid)
+            if d:
+                d["bytes"] += n
+
+    def dl_end(self, vid: int) -> None:
+        with self._lock:
+            self.downloads.pop(vid, None)
+
+    def downloads_snapshot(self, limit: int = 50) -> list[dict]:
+        now = time.monotonic()
+        with self._lock:
+            rows = list(self.downloads.values())[:limit]
+            return [{"external_id": d["external_id"], "job_id": d["job_id"], "total": d["total"], "bytes": d["bytes"],
+                     "bps": (d["bytes"] - d["_from"]) / max(now - d["_t0"], 0.001)} for d in rows]
 
     def add_id(self) -> None:
         with self._lock:
@@ -74,7 +99,7 @@ class ChunkProcessor:
         cs = chunk["settings"]
         settings = settings_from(cs, self.default_template)
         self.gate.set_rate(cs.get("rate_limit_rps"))
-        fetcher = Fetcher(self.gate, stop, counters=self.counters)
+        fetcher = Fetcher(self.gate, stop, counters=self.counters, job_id=chunk.get("job_id"))
 
         start, end = chunk["next_id"], chunk["range_end"]
         pending_ids = iter(range(start, end + 1))
@@ -141,7 +166,7 @@ class ChunkProcessor:
             try:
                 exhausted = False
                 while True:
-                    while not exhausted and not abort and len(in_flight) < threads:
+                    while not exhausted and not abort and len(in_flight) < max(1, round(threads * self.gate.scale)):
                         vid = next(pending_ids, None)
                         if vid is None:
                             exhausted = True

@@ -20,6 +20,7 @@ from sqlalchemy.orm import sessionmaker
 from app import API_VERSION, __version__
 from app.api import auth as auth_api
 from app.api import jobs as jobs_api
+from app.api import monitoring as monitoring_api
 from app.api import users as users_api
 from app.api import workers as workers_api
 from app.background import reaper_loop
@@ -101,6 +102,7 @@ def create_app(
     application.include_router(auth_api.router)
     application.include_router(users_api.router)
     application.include_router(jobs_api.router)
+    application.include_router(monitoring_api.router)
     application.include_router(workers_api.router)
 
     static_dir = Path(__file__).parent / "static"

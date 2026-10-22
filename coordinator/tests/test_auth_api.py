@@ -229,3 +229,20 @@ def test_security_headers(env):
     assert r.headers["x-content-type-options"] == "nosniff" and r.headers["x-frame-options"] == "DENY"
     assert "default-src 'self'" in r.headers["content-security-policy"]
     assert anon.get("/api/version").headers["cache-control"] == "no-store"
+
+
+def test_new_endpoints_follow_roles(env):
+    _, app, *_ = env
+    admin = login(app)
+    make_user(admin, "viewer3", "viewer")
+    make_user(admin, "oper3", "operator")
+    viewer, oper = login(app, "viewer3", "Passw0rd-long"), login(app, "oper3", "Passw0rd-long")
+    jid = oper.post("/api/jobs", json={"name": "x"}).json()["id"]
+    for who in (viewer, oper):
+        assert who.get("/api/alerts").status_code == 200 and who.get("/api/downloads").status_code == 200
+    assert viewer.get(f"/api/jobs/{jid}/export").status_code == 200  # просмотр и выгрузка — наблюдателю
+    assert viewer.post(f"/api/jobs/{jid}/retry-failed").status_code == 403
+    assert oper.post(f"/api/jobs/{jid}/retry-failed").status_code == 409  # доступно, но ошибок нет
+    anon = TestClient(app)
+    assert anon.get("/api/alerts").status_code == 401 and anon.get(f"/api/jobs/{jid}/export").status_code == 401
+    assert admin.get("/api/audit", params={"action": "job_export"}).json()  # выгрузка попала в журнал

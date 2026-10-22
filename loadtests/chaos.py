@@ -109,7 +109,17 @@ def wait_job(jid, timeout=240, on_tick=None, terminal=("completed", "failed", "s
 def all_items(jid):
     items, offset = [], 0
     while True:
-        code, page = http("GET", f"{API}/api/jobs/{jid}/items?limit=1000&offset={offset}")
+        page = None
+        for _ in range(30):  # после перезапуска БД/координатора API может отвечать ошибкой ещё несколько секунд
+            try:
+                code, page = http("GET", f"{API}/api/jobs/{jid}/items?limit=1000&offset={offset}")
+                if code == 200 and isinstance(page, dict):
+                    break
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(1)
+        else:
+            raise RuntimeError("API не отвечает при чтении результатов")
         items += page["items"]
         offset += 1000
         if offset >= page["total"]:
@@ -272,18 +282,22 @@ def coordinator_restart():
 
 
 def postgres_restart():
-    lo, hi = 5000, 5399
-    mock_config(chunk_delay_ms=60, delay_ms=20)
+    lo, hi = 5000, 5599
+    mock_config(chunk_delay_ms=400, delay_ms=40)  # задание идёт ~15–30 с: перезапуск БД точно попадает в середину
     jid = create_job("chaos-postgres-restart", lo, hi)
     fired = []
 
     def tick(t, j):
-        if t > 6 and not fired:
+        # перезапускаем БД, когда задание уже идёт и ещё не закончилось
+        if not fired and j and j["status"] == "running" and 50 <= j["stats"]["processed_ids"] < (hi - lo + 1) - 150:
             fired.append(t)
             dc("restart", "postgres")
 
     j = wait_job(jid, 300, tick)
-    return jid, lo, hi, 0, [] if j["status"] == "completed" else [f"статус {j['status']}"]
+    problems = [] if j["status"] == "completed" else [f"статус {j['status']}"]
+    if not fired:
+        problems.append("Postgres не был перезапущен: задание успело завершиться раньше")
+    return jid, lo, hi, 0, problems
 
 
 def stop_resume():

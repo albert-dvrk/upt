@@ -56,6 +56,8 @@ class Agent:
         while not self.stop.wait(self.heartbeat_interval):
             try:
                 info = self.metrics.collect() if self.metrics else None
+                if info is not None:  # состояние выполнения: активные загрузки и масштаб адаптивного ограничения
+                    info["runtime"] = {"downloads": self.counters.downloads_snapshot(), "throttle_scale": round(self.gate.scale, 2)}
                 resp = self.client.heartbeat(info, self.metrics.resources() if self.metrics else None)
                 for job in resp.get("jobs", []):  # лимит скорости применяется сразу, без новой аренды
                     self.gate.set_rate(job.get("rate_limit_rps"))

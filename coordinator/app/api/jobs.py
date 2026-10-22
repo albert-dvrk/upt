@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import StreamingResponse
 
 from app.api.deps import OperatorDep, SessionDep, ViewerDep
 from app.schemas import (
@@ -16,6 +17,7 @@ from app.schemas import (
     JobWorkerPatch,
 )
 from app.services import auth as auth_svc
+from app.services import export as export_svc
 from app.services import jobs as jobs_svc
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -139,3 +141,27 @@ def list_events(
     limit: int = Query(200, ge=1, le=1000),
 ):
     return jobs_svc.list_events(session, job_id, level=level, limit=limit)
+
+
+@router.post("/{job_id}/retry-failed", response_model=JobOut, status_code=201)
+def retry_failed(job_id: int, session: SessionDep, who: OperatorDep):
+    """Повтор ошибочных элементов: новое задание (попытка) на диапазон ошибок с теми же настройками."""
+    job = jobs_svc.retry_failed(session, job_id, created_by=who.user_id or None)
+    auth_svc.audit(session, who, "job_retry_failed", "job", job_id, ip=who.ip, details={"new_job": job.id})
+    session.commit()
+    return job
+
+
+@router.get("/{job_id}/export")
+def export_job(job_id: int, request: Request, session: SessionDep, who: ViewerDep,
+               format: str = Query("csv", pattern="^(csv|json)$"), status: str | None = None):
+    """Выгрузка результатов (CSV или JSON). Действие попадает в журнал аудита."""
+    export_svc.check_job(session, job_id)
+    auth_svc.audit(session, who, "job_export", "job", job_id, ip=who.ip, details={"format": format, "status": status})
+    session.commit()
+    media = "text/csv; charset=utf-8" if format == "csv" else "application/json"
+    return StreamingResponse(
+        export_svc.stream_export(request.app.state.session_factory, job_id, format, status),
+        media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="job-{job_id}.{format}"'},
+    )
