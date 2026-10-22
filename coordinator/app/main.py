@@ -16,6 +16,7 @@ from app.api import workers as workers_api
 from app.background import reaper_loop
 from app.config import Settings, get_settings
 from app.db import make_engine, make_session_factory
+from app.services.deploy import DeployConfig, SshDeployer
 from app.services.errors import ServiceError
 
 
@@ -24,6 +25,7 @@ def create_app(
     *,
     background: bool = True,
     settings: Settings | None = None,
+    deployer: SshDeployer | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     factory = session_factory or make_session_factory(make_engine(settings.database_url))
@@ -41,6 +43,18 @@ def create_app(
 
     application = FastAPI(title="videofetch coordinator", version=__version__, lifespan=lifespan)
     application.state.session_factory = factory
+    application.state.deployer = deployer or SshDeployer(
+        DeployConfig(
+            source_dir=settings.agent_source_dir,
+            coordinator_url=settings.agent_coordinator_url,
+            key_dir=settings.ssh_key_dir,
+            remote_dir=settings.agent_remote_dir,
+            python=settings.agent_python,
+            known_hosts=settings.ssh_known_hosts,
+            connect_timeout=settings.ssh_connect_timeout,
+            url_template=settings.default_url_template,
+        )
+    )
     application.include_router(jobs_api.router)
     application.include_router(workers_api.router)
 

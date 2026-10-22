@@ -6,6 +6,8 @@ from typing import Annotated
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
+from app.services.deploy import SshDeployer
+
 
 def get_session(request: Request) -> Iterator[Session]:
     """Сессия на запрос. commit вызывает сам обработчик: ответ уходит только после фиксации."""
@@ -17,3 +19,10 @@ def get_session(request: Request) -> Iterator[Session]:
 
 
 SessionDep = Annotated[Session, Depends(get_session)]
+
+
+def get_deployer(request: Request) -> SshDeployer:
+    return request.app.state.deployer
+
+
+DeployerDep = Annotated[SshDeployer, Depends(get_deployer)]

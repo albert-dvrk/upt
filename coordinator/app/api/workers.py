@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
-from app.api.deps import SessionDep
+from app.api.deps import DeployerDep, SessionDep
 from app.schemas import (
     CompleteRequest,
     CompleteResponse,
@@ -21,6 +21,9 @@ from app.schemas import (
     WorkerPatch,
 )
 from app.services import leases as leases_svc
+from app.services.deploy import Target
+from app.services.events import log_event
+from app.services.errors import ServiceError
 from app.services import workers as workers_svc
 
 router = APIRouter(prefix="/api/workers", tags=["workers"])
@@ -61,6 +64,57 @@ def patch_worker(worker_id: int, data: WorkerPatch, session: SessionDep):
     worker = workers_svc.update_worker(session, worker_id, data.model_dump(exclude_none=True))
     session.commit()
     return worker
+
+
+# --- управление агентом по SSH. Обработчики синхронные: FastAPI выполняет их в пуле потоков.
+
+
+def _target(worker) -> Target:
+    return Target(worker.host, worker.ssh_port, worker.ssh_user, worker.ssh_key_ref, worker.name)
+
+
+def _remote(session, worker, deployer, operation: str, action):
+    """Выполняет операцию на сервере и пишет событие (успех или ошибку), не раскрывая ключ."""
+    try:
+        result = action(deployer, _target(worker))
+    except ServiceError as exc:
+        log_event(session, operation, level="ERROR", component="deploy", worker_id=worker.id,
+                  result="failed", error_code=exc.code, message=exc.message)
+        session.commit()
+        raise
+    log_event(session, operation, component="deploy", worker_id=worker.id, result="ok")
+    session.commit()
+    return result
+
+
+@router.post("/{worker_id}/agent/check")
+def agent_check(worker_id: int, session: SessionDep, deployer: DeployerDep):
+    worker = workers_svc.get_worker(session, worker_id)
+    return _remote(session, worker, deployer, "ssh_check", lambda d, t: d.check(t))
+
+
+@router.post("/{worker_id}/agent/deploy")
+def agent_deploy(worker_id: int, session: SessionDep, deployer: DeployerDep):
+    worker = workers_svc.get_worker(session, worker_id)
+    return _remote(session, worker, deployer, "agent_deploy", lambda d, t: d.deploy(t))
+
+
+@router.post("/{worker_id}/agent/start")
+def agent_start(worker_id: int, session: SessionDep, deployer: DeployerDep):
+    worker = workers_svc.get_worker(session, worker_id)
+    return _remote(session, worker, deployer, "agent_start", lambda d, t: d.start(t))
+
+
+@router.post("/{worker_id}/agent/stop")
+def agent_stop(worker_id: int, session: SessionDep, deployer: DeployerDep):
+    worker = workers_svc.get_worker(session, worker_id)
+    return _remote(session, worker, deployer, "agent_stop", lambda d, t: d.stop(t))
+
+
+@router.get("/{worker_id}/agent")
+def agent_status(worker_id: int, session: SessionDep, deployer: DeployerDep):
+    worker = workers_svc.get_worker(session, worker_id)
+    return _remote(session, worker, deployer, "agent_status", lambda d, t: d.status(t))
 
 
 @router.get("/{worker_id}/metrics", response_model=list[MetricOut])

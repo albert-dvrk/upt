@@ -22,6 +22,15 @@ class Settings(BaseSettings):
     default_url_template: str = "http://mock:8080/{id}"
     allowed_target_hosts: str = "mock,localhost,127.0.0.1"
 
+    # Развёртывание агентов по SSH
+    agent_source_dir: str = "/srv/agent"
+    agent_coordinator_url: str = "http://coordinator:8000"  # как агент видит координатор
+    agent_remote_dir: str = "videofetch-agent"
+    agent_python: str = "python3"
+    ssh_key_dir: str = "/run/secrets"
+    ssh_known_hosts: str = "/tmp/vf_known_hosts"
+    ssh_connect_timeout: int = 10
+
     @property
     def allowed_hosts(self) -> frozenset[str]:
         return frozenset(h.strip().lower() for h in self.allowed_target_hosts.split(",") if h.strip())

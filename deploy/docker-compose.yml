@@ -54,6 +54,7 @@ services:
       VF_DATABASE_URL: postgresql+psycopg://videofetch:${POSTGRES_PASSWORD:-videofetch}@postgres:5432/videofetch
       VF_ALLOWED_TARGET_HOSTS: mock
       VF_DEFAULT_URL_TEMPLATE: "http://mock:8080/{id}"
+      VF_AGENT_COORDINATOR_URL: "http://coordinator:8000"
     volumes:
       - ./secrets/downloader_ed25519:/run/secrets/worker-key:ro
     ports:

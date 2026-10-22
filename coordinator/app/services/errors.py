@@ -27,3 +27,10 @@ class Conflict(ServiceError):
 class Invalid(ServiceError):
     status_code = 422
     code = "invalid"
+
+
+class RemoteError(ServiceError):
+    """Не удалось выполнить операцию на рабочем сервере (SSH недоступен, команда упала)."""
+
+    status_code = 502
+    code = "remote_error"

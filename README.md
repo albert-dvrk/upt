@@ -76,3 +76,8 @@ mock-сервис, Compose-стенд. Дальше — API координато
 - Протокол аренды блоков: агент берёт блок `lease`, шлёт `progress` (чекпоинт `next_id` + результаты), завершает `complete`. Повторные сообщения идемпотентны; при потере аренды ответ `409 lease_lost`.
 - Цель задания ограничена списком `VF_ALLOWED_TARGET_HOSTS` (по умолчанию только mock).
 - Тесты PostgreSQL: `VF_TEST_DATABASE_URL=postgresql+psycopg://videofetch:videofetch@localhost:5433/videofetch_test pytest coordinator/tests/test_pg_concurrency.py`.
+
+## Развёртывание агентов по SSH
+
+- `POST /api/workers/{id}/agent/check|deploy|start|stop`, `GET /api/workers/{id}/agent` — координатор заходит на сервер по ключу (`ssh_key_ref`, файл только внутри `/run/secrets`), заливает пакет агента архивом через stdin и запускает его в фоне (`agent.pid`, `agent.log`).
+- Первый запуск всего стенда одной командой: `cd deploy && ./smoke.sh`.
