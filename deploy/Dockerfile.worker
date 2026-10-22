@@ -1,0 +1,21 @@
+FROM python:3.12-slim
+
+# «Рабочий сервер»: sshd + Python. Код агента координатор зальёт по SSH сам,
+# зависимости агента заранее установлены в образ.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssh-server \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -m -s /bin/bash downloader \
+    && usermod -p '*' downloader \
+    && mkdir -p /run/sshd /data/videos \
+    && chown downloader:downloader /data/videos
+
+COPY agent/requirements.txt /tmp/agent-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/agent-requirements.txt
+
+COPY deploy/worker/sshd_videofetch.conf /etc/ssh/sshd_config.d/99-videofetch.conf
+COPY deploy/worker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 22
+ENTRYPOINT ["/entrypoint.sh"]

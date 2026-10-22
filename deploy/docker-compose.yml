@@ -1,0 +1,89 @@
+name: videofetch
+
+# Лабораторный стенд: PostgreSQL, mock-хостинг, координатор и три «рабочих сервера» с sshd.
+# Перед первым запуском:  ./gen-keys.sh
+# Запуск:                 docker compose up --build
+
+x-worker: &worker
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile.worker
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: videofetch
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-videofetch}
+      POSTGRES_DB: videofetch
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U videofetch -d videofetch"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mock:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.mock
+    environment:
+      MOCK_SEED: "1"
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8080/_control/state')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  coordinator:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.coordinator
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock:
+        condition: service_healthy
+    environment:
+      VF_DATABASE_URL: postgresql+psycopg://videofetch:${POSTGRES_PASSWORD:-videofetch}@postgres:5432/videofetch
+    volumes:
+      - ./secrets/downloader_ed25519:/run/secrets/worker-key:ro
+    ports:
+      - "8001:8000"
+
+  worker-01:
+    <<: *worker
+    hostname: worker-01
+    volumes:
+      - ./secrets/downloader_ed25519.pub:/run/keys/downloader.pub:ro
+      - worker01-data:/data/videos
+    ports:
+      - "2201:22"
+
+  worker-02:
+    <<: *worker
+    hostname: worker-02
+    volumes:
+      - ./secrets/downloader_ed25519.pub:/run/keys/downloader.pub:ro
+      - worker02-data:/data/videos
+    ports:
+      - "2202:22"
+
+  worker-03:
+    <<: *worker
+    hostname: worker-03
+    volumes:
+      - ./secrets/downloader_ed25519.pub:/run/keys/downloader.pub:ro
+      - worker03-data:/data/videos
+    ports:
+      - "2203:22"
+
+volumes:
+  pgdata:
+  worker01-data:
+  worker02-data:
+  worker03-data:

@@ -1,0 +1,10 @@
+[project]
+name = "videofetch"
+version = "0.1.0"
+description = "Распределённая система обнаружения и загрузки видеоматериалов (лабораторная работа)"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+pythonpath = ["coordinator", "mockserver", "agent"]
+testpaths = ["coordinator/tests", "mockserver/tests"]
+asyncio_mode = "auto"
