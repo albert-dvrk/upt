@@ -175,8 +175,15 @@ def verify(jid, lo, hi, allow_failed=0):
         elif any(d != sha for _, d in have):
             problems.append(f"id {vid}: контрольная сумма не совпала на {[w for w, d in have if d != sha]}")
     # записи о файлах в БД совпадают с диском
-    code, page = http("GET", f"{API}/api/jobs/{jid}/files?limit=1000")
-    db_files = {f["external_id"]: f for f in page["files"]} if code == 200 else {}
+    db_files, offset = {}, 0
+    while True:  # страницы по 1000: файлов может быть больше
+        code, page = http("GET", f"{API}/api/jobs/{jid}/files?limit=1000&offset={offset}")
+        if code != 200:
+            break
+        db_files.update({f["external_id"]: f for f in page["files"]})
+        offset += 1000
+        if offset >= page["total"]:
+            break
     for vid, sha in expected_sha.items():
         rec = db_files.get(vid)
         if items.get(vid, {}).get("status") == "completed":

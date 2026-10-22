@@ -43,6 +43,7 @@ class Session:
             handlers.append(urllib.request.HTTPSHandler(context=ctx))
         self.opener = urllib.request.build_opener(*handlers)
         self.csrf: str | None = None
+        self.server_ms: str | None = None  # время обработки на сервере (заголовок X-Process-Time-Ms)
 
     def _send(self, method, url, body, timeout, headers):
         data = json.dumps(body).encode() if body is not None else None
@@ -52,9 +53,11 @@ class Session:
         req = urllib.request.Request(url, data=data, method=method, headers=hdrs)
         try:
             with self.opener.open(req, timeout=timeout) as r:
+                self.server_ms = r.headers.get("X-Process-Time-Ms")
                 raw = r.read()
                 return r.status, (json.loads(raw) if raw else None)
         except urllib.error.HTTPError as e:
+            self.server_ms = e.headers.get("X-Process-Time-Ms")
             raw = e.read()
             try:
                 return e.code, json.loads(raw)

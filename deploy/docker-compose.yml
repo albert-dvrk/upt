@@ -13,6 +13,7 @@ x-worker: &worker
 services:
   postgres:
     image: postgres:16-alpine
+    command: ["postgres", "-c", "max_connections=200"]
     environment:
       POSTGRES_USER: videofetch
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-videofetch}
@@ -57,6 +58,9 @@ services:
       VF_AGENT_COORDINATOR_URL: "https://coordinator:8000"
       VF_AGENT_CA_FILE: /run/tls/server.crt
       VF_COOKIE_SECURE: "true"
+      VF_WORKERS: "4"            # процессов координатора; пул БД на каждый — ниже
+      VF_DB_POOL_SIZE: "8"
+      VF_DB_MAX_OVERFLOW: "8"
       VF_SECRET_KEY: ${VF_SECRET_KEY:?Запустите ./gen-secrets.sh}
       VF_ADMIN_PASSWORD: ${VF_ADMIN_PASSWORD:?Запустите ./gen-secrets.sh}
     volumes:

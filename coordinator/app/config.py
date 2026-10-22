@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="VF_", env_file=".env", extra="ignore")
 
     database_url: str = "postgresql+psycopg://videofetch:videofetch@localhost:5432/videofetch"
+    db_pool_size: int = 20
+    db_max_overflow: int = 30  # вместе с пулом не больше max_connections PostgreSQL (по умолчанию 100)
+    db_pool_timeout: int = 20
 
     # блоки и аренда
     default_chunk_size: int = 1000

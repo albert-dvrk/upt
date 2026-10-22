@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+import time
 from contextlib import asynccontextmanager
 
 from pathlib import Path
@@ -13,6 +14,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from app import API_VERSION, __version__
@@ -61,9 +63,12 @@ def create_app(
     async def lifespan(_: FastAPI):
         if settings.auth_enabled:
             with factory() as session:  # первый администратор из VF_ADMIN_PASSWORD, если пользователей ещё нет
-                if auth_svc.bootstrap_admin(session, settings):
-                    session.commit()
-                    log.info("создан администратор %s", settings.admin_username)
+                try:
+                    if auth_svc.bootstrap_admin(session, settings):
+                        session.commit()
+                        log.info("создан администратор %s", settings.admin_username)
+                except IntegrityError:  # несколько процессов стартуют одновременно: администратора создал соседний
+                    session.rollback()
         stop = asyncio.Event()
         task = asyncio.create_task(reaper_loop(factory, stop, settings)) if background else None
         try:
@@ -108,13 +113,17 @@ def create_app(
 
     @application.middleware("http")
     async def security_headers(request: Request, call_next):
+        started = time.perf_counter()
         response = await call_next(request)
+        # время внутри приложения (включая ожидание пула потоков): сравнивается с задержкой на клиенте
+        response.headers["X-Process-Time-Ms"] = f"{(time.perf_counter() - started) * 1000:.0f}"
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         if request.url.path.startswith("/api/"):
             response.headers.setdefault("Cache-Control", "no-store")
-        else:
+        elif request.url.path not in ("/docs", "/redoc", "/docs/oauth2-redirect"):
+            # страницы документации FastAPI подгружают Swagger/ReDoc с CDN и используют встроенные скрипты
             response.headers.setdefault("Content-Security-Policy", CSP)
         if settings.cookie_secure:
             response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
