@@ -28,6 +28,7 @@ entity workers {
   min_free_space_gb
   status, enabled
   last_heartbeat_at, resources
+  agent_token_hash (SHA-256)
 }
 entity worker_metrics {
   * id

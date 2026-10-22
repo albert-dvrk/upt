@@ -1,0 +1,49 @@
+@startuml terminal-sequence
+!theme plain
+skinparam defaultFontName DejaVu Sans
+skinparam shadowing false
+title Веб-терминал: открытие сеанса и выполнение команды
+
+actor "Администратор" as U
+participant "Браузер\n(xterm.js)" as B
+participant "Координатор\n(WebSocket-шлюз)" as C
+database "БД\n(users, audit_log)" as DB
+participant "ssh (PTY)" as S
+participant "Рабочий сервер\n(sshd, учётная запись downloader)" as W
+
+U -> B : «Терминал» у сервера
+B -> C : WebSocket /api/workers/{id}/terminal\n(cookie сессии, Origin)
+C -> C : Origin совпадает с Host?
+C -> DB : пользователь активен, роль administrator?
+alt нет прав / лимит сеансов / чужой Origin
+  C --> B : закрытие (4401 / 4403 / 4429)
+else доступ разрешён
+  C -> DB : audit: terminal_open
+  C -> S : ssh -tt -i <ключ из каталога секретов> user@host
+  S -> W : SSH-сессия
+  C --> B : ready
+end
+loop ввод пользователя
+  B -> C : input (клавиши)
+  C -> C : политика команд по строке
+  alt команда запрещена (sudo, rm -rf /, reboot …)
+    C -> DB : audit: terminal_blocked
+    C --> B : notice «заблокировано», строка стёрта
+  else разрешена
+    C -> DB : audit: terminal_command (секреты замаскированы)
+    C -> S : ввод в PTY
+    S -> W
+    W --> S : вывод
+    S --> C
+    C --> B : output
+  end
+end
+== завершение ==
+note over C
+  простой > 5 мин, предел 30 мин, отзыв прав (проверка раз в 15 с),
+  выход из оболочки или закрытие вкладки
+end note
+C -> S : SIGHUP процессу ssh
+C -> DB : audit: terminal_close (причина, длительность)
+C --> B : closed
+@enduml

@@ -5,7 +5,7 @@ skinparam shadowing false
 title Лабораторный стенд (docker compose)
 
 node "Хост (WSL / Docker)" {
-  node "videofetch-coordinator\n:8001 → 8000" as C
+  node "videofetch-coordinator\nHTTPS :8001 → 8000\n(4 процесса uvicorn, TLS)" as C
   database "videofetch-postgres\n127.0.0.1:5433 → 5432" as P
   node "videofetch-mock\n:8080" as M
   node "worker-01\nsshd :2201" as W1
@@ -14,12 +14,12 @@ node "Хост (WSL / Docker)" {
 }
 actor "Оператор\n(браузер)" as U
 
-U --> C : http://localhost:8001/
+U --> C : https://localhost:8001/\n(вход, CSRF, WebSocket-терминал)
 C --> P : SQL (psycopg3)
-C --> W1 : SSH по ключу\n(/run/secrets/worker-key)
+C --> W1 : SSH по ключу\n(развёртывание, терминал)
 C --> W2 : SSH
 C --> W3 : SSH
-W1 --> C : API агента (http://coordinator:8000)
+W1 --> C : API агента по HTTPS\n(токен агента, проверка ca.pem)
 W2 --> C
 W3 --> C
 W1 --> M : HTTP GET /{id}

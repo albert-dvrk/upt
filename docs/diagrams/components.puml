@@ -11,7 +11,10 @@ node "Браузер" {
 }
 
 node "Координатор (FastAPI)" as Coord {
-  component "HTTP API\n/api/jobs, /api/workers" as API
+  component "HTTPS API + статика UI\n(вход, роли, CSRF, заголовки CSP)" as API
+  component "Аутентификация и аудит\n(scrypt, сессии, токены агентов)" as Auth
+  component "Мониторинг\n(алерты, активные загрузки, экспорт)" as Mon
+  component "SSH-шлюз терминала\n(WebSocket ↔ PTY ↔ ssh,\nполитика команд, аудит)" as Term
   component "Сервис заданий\n(диапазоны, автомат состояний)" as Jobs
   component "Сервис аренды блоков\n(lease / progress / complete / fail)" as Leases
   component "Reaper\n(фоновая проверка аренд и heartbeat)" as Reaper
@@ -21,7 +24,7 @@ node "Координатор (FastAPI)" as Coord {
 database "PostgreSQL\n(источник достоверного состояния)" as DB
 
 node "Рабочий сервер (×N)" as Worker {
-  component "Агент\n(регистрация, heartbeat, метрики)" as Agent
+  component "Агент\n(регистрация, heartbeat, метрики,\nадаптивное снижение скорости)" as Agent
   component "Обработчик блока\n(пул потоков, контрольные точки)" as Proc
   component "Загрузчик\n(Range, .part, SHA-256, повторы)" as Fetch
   folder "Хранилище\n/data/videos" as Disk
@@ -31,6 +34,13 @@ cloud "Целевой HTTP-сервис\n(mock-хостинг)" as Target
 
 User --> UI
 UI --> API : REST, опрос раз в 2 с
+UI --> Term : WebSocket (только administrator)
+API --> Auth
+API --> Mon
+Auth --> DB : users, audit_log, токены
+Mon --> DB
+Term --> Worker : SSH (по ключу), интерактивная оболочка
+Term --> Auth : аудит команд
 API --> Jobs
 API --> Leases
 API --> Deploy
